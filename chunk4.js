@@ -248,7 +248,7 @@ function renderDashboard(){
         </svg>
         <div class="score"><b>${health.total}</b><span>de 100</span></div>
       </div>
-      <div class="health-body" style="flex:1;min-width:240px">
+      <div class="health-body" style="flex:1;min-width:0">
         <h2>Salud financiera</h2>
         <p>${healthLabel(health.total)}</p>
         <div class="health-parts">

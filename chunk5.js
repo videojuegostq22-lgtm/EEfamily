@@ -111,7 +111,7 @@ function renderBudgetDetail(b,d,cmFrom,cmTo){
   const status = pct>=100?'danger':pct>=80?'warn':'pos';
   return `<div class="row" data-edit-budget="${b.id}" style="flex-wrap:wrap">
     <div class="icon" style="background:${cat?.color||'#94A3B8'}22;color:${cat?.color||'#94A3B8'};font-size:20px">${catIcon(cat?.name||'')}</div>
-    <div class="info" style="flex:1;min-width:200px">
+    <div class="info" style="flex:1;min-width:0">
       <b>${h.esc(cat?.name||'?')}</b>
       <div class="row-between" style="margin-top:2px"><span class="small num">${fmtMoney(spent)} de ${fmtMoney(b.limit)}</span><span class="small num">${pct.toFixed(0)}%</span></div>
       <div class="progress ${status}"><div style="width:${Math.min(100,pct)}%"></div></div>
@@ -268,7 +268,7 @@ function renderDeudas(){
         const pctPaid = de.initial>0?Math.max(0,Math.min(100,(de.initial-de.outstanding)/de.initial*100)):0;
         return `<div class="row" data-edit-debt="${de.id}" style="flex-wrap:wrap">
           <div class="icon" style="background:var(--neg-soft);color:var(--neg-text);font-size:18px">💳</div>
-          <div class="info" style="flex:1;min-width:240px">
+          <div class="info" style="flex:1;min-width:0">
             <b>${h.esc(de.name)}</b>
             <div class="small">Interés ${de.rate||0}% · Cuota ${fmtMoney(de.payment)} · Inicio ${fmtMoney(de.initial)}</div>
             <div class="progress" style="margin-top:6px"><div style="width:${pctPaid}%"></div></div>
