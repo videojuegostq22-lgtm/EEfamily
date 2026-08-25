@@ -13,16 +13,16 @@ function renderMovimientos(){
   const totals = Engine.totals(txs);
   return `
   <div class="card mb-16">
-    <div class="row-between mb-12">
-      <div>
+    <div class="tx-summary-header mb-12">
+      <div class="tx-summary-info">
         <div class="small">${range.label} · ${txs.length} movimientos</div>
-        <div style="display:flex;gap:16px;margin-top:4px">
+        <div class="tx-summary-badges">
           <span class="badge pos">Ingresos ${fmtMoney(totals.income)}</span>
           <span class="badge neg">Gastos ${fmtMoney(totals.expense)}</span>
           <span class="badge brand">Balance ${fmtMoney(totals.savings)}</span>
         </div>
       </div>
-      <div style="display:flex;gap:6px">
+      <div class="tx-summary-actions">
         <button class="btn btn-ghost btn-sm" id="export-csv">⬇ CSV</button>
         <button class="btn btn-ghost btn-sm" id="import-csv">⬆ Importar</button>
         <button class="btn btn-soft btn-sm" id="add-tx">+ Añadir</button>
