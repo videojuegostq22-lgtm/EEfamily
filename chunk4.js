@@ -86,13 +86,13 @@ function renderShell(content){
   </div>
   <nav class="bnav">
     <div class="bnav-inner">
-      ${['dashboard','movimientos','presupuestos','ia','ajustes'].map(k=>`
+      ${['dashboard','movimientos','presupuestos','ia'].map(k=>`
         <button class="${App.state.route===k?'active':''}" data-nav="${k}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${navItems.find(n=>n.k===k).icon}"/></svg>
           ${h.esc(navItems.find(n=>n.k===k).l)}
         </button>`).join('')}
-      <button data-action="more" style="position:relative">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
+      <button data-action="more" class="${App.state.bnavSheet?'active':''}" style="position:relative">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
         Más
       </button>
     </div>
@@ -100,13 +100,15 @@ function renderShell(content){
   <div class="bnav-sheet ${App.state.bnavSheet?'open':''}" id="bnav-sheet">
     <div class="sheet">
       <div class="grip"></div>
-      <h3 style="margin:0 0 12px">Más secciones</h3>
-      ${navItems.filter(n=>!['dashboard','movimientos','presupuestos','ia','ajustes'].includes(n.k)).map(n=>`
-        <div class="row" data-nav="${n.k}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:22px;height:22px;flex:0 0 22px"><path d="${n.icon}"/></svg>
-          <div class="info"><b>${h.esc(n.l)}</b></div>
-        </div>`).join('')}
-      <button class="btn btn-ghost btn-block" style="margin-top:12px" id="close-sheet">Cerrar</button>
+      <h3>Más secciones</h3>
+      <div class="sheet-grid">
+        ${navItems.filter(n=>!['dashboard','movimientos','presupuestos','ia'].includes(n.k)).map(n=>`
+          <div class="sheet-item" data-nav="${n.k}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${n.icon}"/></svg>
+            <b>${h.esc(n.l)}</b>
+          </div>`).join('')}
+      </div>
+      <button class="btn btn-ghost btn-block" id="close-sheet">Cerrar</button>
     </div>
   </div>`;
 
