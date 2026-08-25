@@ -76,10 +76,10 @@ function renderShell(content){
       ${content}
     </main>
   </div>
-  <button class="fab" id="fab-main" aria-label="Añadir">
+  <button class="fab ${App.state.bnavSheet?'fab-hidden':''}" id="fab-main" aria-label="Añadir" ${App.state.bnavSheet?'tabindex="-1"':''}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
   </button>
-  <div class="fab-menu ${App.state.fabOpen?'open':''}" id="fab-menu">
+  <div class="fab-menu ${App.state.fabOpen?'open':''} ${App.state.bnavSheet?'fab-hidden':''}" id="fab-menu">
     <button data-fab="expense">💸 Gasto</button>
     <button data-fab="income">💰 Ingreso</button>
     <button data-fab="transfer">🔁 Transferencia</button>
