@@ -135,6 +135,114 @@ MIT License - ver archivo LICENSE para más detalles.
 
 Este es un proyecto personal. Para sugerencias o issues, abre un issue en GitHub.
 
+## 🌐 Configuración de Supabase (Sincronización entre dispositivos)
+
+**Sin Supabase**: La app funciona en modo demo local (datos solo en un navegador).
+
+**Con Supabase**: Las cuentas se sincronizan entre dispositivos (recomendado para producción).
+
+### Paso 1: Crear proyecto en Supabase
+
+1. Ve a [supabase.com](https://supabase.com) y crea una cuenta gratuita
+2. Click en **"New Project"**
+   - Name: `family-finance` (o el que prefieras)
+   - Database Password: genera una contraseña segura y guárdala
+   - Region: elige la más cercana a ti
+3. Espera ~2 minutos a que el proyecto se inicialice
+
+### Paso 2: Configurar la base de datos
+
+1. En el panel de Supabase, ve a **"SQL Editor"** (icono de base de datos en el sidebar)
+2. Click en **"New Query"**
+3. Abre el archivo `supabase-setup.sql` de este repositorio
+4. Copia TODO el contenido del archivo
+5. Pégalo en el SQL Editor de Supabase
+6. Click en **"Run"** (o Ctrl+Enter)
+
+Si todo va bien, verás un mensaje de éxito. Las tablas y políticas están creadas.
+
+### Paso 3: Desactivar confirmación de email (recomendado para probar)
+
+Por defecto, Supabase requiere confirmar el email al registrarse. Para simplificar las pruebas:
+
+1. Ve a **"Authentication"** → **"Providers"** → **"Email"**
+2. Desmarca **"Confirm email"**
+3. Click en **"Save"**
+
+⚠️ **Para producción**: Deja la confirmación activada por seguridad.
+
+### Paso 4: Obtener credenciales
+
+1. Ve a **"Project Settings"** → **"API"**
+2. Copia estos dos valores:
+   - **Project URL**: algo como `https://xyz.supabase.co`
+   - **anon public key**: una cadena larga que empieza por `eyJ...`
+
+### Paso 5: Configurar la app
+
+1. Abre el archivo `config.js` en este repositorio
+2. Pega tus credenciales:
+
+```javascript
+window.FF_CONFIG = {
+  supabaseUrl: 'https://xyz.supabase.co',
+  supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+};
+```
+
+3. Guarda el archivo y haz commit:
+
+```bash
+git add config.js
+git commit -m "Config: añadir credenciales de Supabase"
+git push origin main
+```
+
+Vercel detectará el push y redesplegará automáticamente (~30 segundos).
+
+### Paso 6: Probar la app
+
+1. Abre la URL de Vercel en tu navegador
+2. Verás una pantalla de carga mientras se conecta a Supabase
+3. Crea una cuenta con tu email y contraseña
+4. Completa el onboarding (6 pasos rápidos)
+5. Verás un código de invitación: compártelo con tu pareja
+6. Tu pareja se registra en otro dispositivo y usa "Unirme" con el código
+7. ¡Listo! Ambos ven y modifican los mismos datos en tiempo real
+
+## 🧪 Pruebas de Sincronización entre Dispositivos
+
+Para verificar que el realtime funciona:
+
+1. **Dispositivo 1**: Abre la app y haz login como Usuario 1
+2. **Dispositivo 2**: Abre la app en otro navegador/dispositivo y haz login como Usuario 2
+3. En el dispositivo 1, añade un gasto de €50 en Restaurantes
+4. En el dispositivo 2, verás aparecer el gasto automáticamente (sin recargar)
+
+## 🔒 Seguridad con Supabase
+
+- **Autenticación**: Supabase Auth con JWT y refresh tokens
+- **Autorización**: Row Level Security (RLS) en PostgreSQL
+- **Datos sensibles**: Encriptación at-rest (Supabase gestionado)
+- **Validación**: Validaciones SQL en servidor + cliente
+- **Rate limiting**: Configurado en Supabase (por defecto)
+
+## 💰 Precios
+
+- **Supabase**: Plan gratuito incluye 500MB de base de datos, 2GB de transferencia y 50,000 usuarios activos mensuales (más que suficiente para una pareja)
+- **Vercel**: Plan gratuito con despliegues ilimitados y 100GB de bandwidth
+
+## 🆘 Soporte
+
+Si tienes problemas:
+
+1. **La app no carga**: Verifica que `config.js` tenga las credenciales correctas
+2. **Error de RLS**: Ejecuta de nuevo `supabase-setup.sql` en el SQL Editor
+3. **No recibo cambios en tiempo real**: Verifica que Realtime esté habilitado en Supabase
+4. **Problemas de login**: Asegúrate de haber desactivado "Confirm email" en Supabase
+
+Para más ayuda, abre un issue en GitHub.
+
 ---
 
 **Desarrollado con ❤️ para gestionar mejor la economía familiar.**

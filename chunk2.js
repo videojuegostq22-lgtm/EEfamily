@@ -772,3 +772,300 @@ const Activity = {
   }
 };
 
+/* =========================================================================
+   CLOUD (Supabase) — optional cross-device sync
+   ========================================================================= */
+const Cloud = {
+  sb: null,
+  channel: null,
+  lastPushVersion: null,
+  _pushTimer: null,
+  enabled(){
+    return !!(window.FF_CONFIG && window.FF_CONFIG.supabaseUrl && window.FF_CONFIG.supabaseAnonKey && window.supabase);
+  },
+  init(){
+    if(!this.enabled()) return;
+    try{
+      this.sb = window.supabase.createClient(
+        window.FF_CONFIG.supabaseUrl,
+        window.FF_CONFIG.supabaseAnonKey
+      );
+    }catch(e){
+      console.error('Cloud init error:', e);
+    }
+  },
+  async getSession(){
+    if(!this.sb) return null;
+    try{
+      const {data} = await this.sb.auth.getSession();
+      return data?.session || null;
+    }catch(e){
+      console.error('getSession error:', e);
+      return null;
+    }
+  },
+  async getUserProfile(){
+    if(!this.sb) return null;
+    try{
+      const {data:{user}} = await this.sb.auth.getUser();
+      if(!user) return null;
+      const {data, error} = await this.sb
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      if(error || !data) return null;
+      return {id:data.id, name:data.name, email:data.email, createdAt:data.created_at};
+    }catch(e){
+      console.error('getUserProfile error:', e);
+      return null;
+    }
+  },
+  async register({name, email, password}){
+    if(!this.sb) throw new Error('Cloud not enabled');
+    const {data, error} = await this.sb.auth.signUp({email, password});
+    if(error){
+      if(error.message.includes('confirm')){
+        throw new Error('Revisa tu email para confirmar la cuenta');
+      }
+      throw new Error(error.message);
+    }
+    if(!data.user) throw new Error('Registro fallido');
+    // Crear perfil (si la sesión está activa)
+    if(data.session){
+      const {error:profileError} = await this.sb
+        .from('profiles')
+        .insert({id:data.user.id, name, email});
+      if(profileError) console.warn('Profile insert error:', profileError);
+    }
+    // Si no hay sesión (email confirmation pendiente), avisar
+    if(!data.session){
+      throw new Error('Registro exitoso. Revisa tu email para confirmar la cuenta.');
+    }
+    return {id:data.user.id, name, email};
+  },
+  async login({email, password}){
+    if(!this.sb) throw new Error('Cloud not enabled');
+    const {data, error} = await this.sb.auth.signInWithPassword({email, password});
+    if(error){
+      if(error.message.includes('Invalid login') || error.message.includes('invalid')){
+        throw new Error('Email o contraseña incorrectos');
+      }
+      throw new Error(error.message);
+    }
+    if(!data.user) throw new Error('Login fallido');
+    // Cargar perfil
+    const profile = await this.getUserProfile();
+    if(!profile) throw new Error('Perfil no encontrado. Contacta con soporte.');
+    return profile;
+  },
+  async logout(){
+    if(!this.sb) return;
+    try{
+      await this.sb.auth.signOut();
+    }catch(e){
+      console.error('Logout error:', e);
+    }
+  },
+  async createSpace(name, userId){
+    if(!this.sb) throw new Error('Cloud not enabled');
+    const inviteCode = Math.random().toString(36).slice(2,8).toUpperCase();
+    const data = Family.emptyData();
+    const {data:space, error} = await this.sb
+      .from('family_spaces')
+      .insert({name, invite_code:inviteCode, created_by:userId, data})
+      .select()
+      .single();
+    if(error) throw new Error(error.message);
+    // Añadir creador como miembro
+    const {error:memberError} = await this.sb
+      .from('family_members')
+      .insert({space_id:space.id, user_id:userId, role:'owner'});
+    if(memberError) console.warn('Member insert error:', memberError);
+    // Crear invitación
+    const {error:invError} = await this.sb
+      .from('invitations')
+      .insert({space_id:space.id, code:inviteCode, created_by:userId});
+    if(invError) console.warn('Invitation insert error:', invError);
+    return {id:space.id, name:space.name, inviteCode:space.invite_code, members:[{userId,joinedAt:space.created_at}]};
+  },
+  async joinByCode(code, userId){
+    if(!this.sb) throw new Error('Cloud not enabled');
+    const {data:spaceId, error} = await this.sb
+      .rpc('accept_invitation', {invitation_code:code});
+    if(error) throw new Error(error.message || 'Código de invitación no válido');
+    // Cargar espacio
+    const {data:space, error:spaceError} = await this.sb
+      .from('family_spaces')
+      .select('*,family_members(*)')
+      .eq('id', spaceId)
+      .single();
+    if(spaceError) throw new Error(spaceError.message);
+    return {
+      id:space.id,
+      name:space.name,
+      inviteCode:space.invite_code,
+      members:space.family_members.map(m=>({userId:m.user_id, joinedAt:m.joined_at}))
+    };
+  },
+  async getUserSpaces(userId){
+    if(!this.sb) return [];
+    try{
+      const {data, error} = await this.sb
+        .from('family_members')
+        .select('space_id,family_spaces(*)')
+        .eq('user_id', userId);
+      if(error || !data) return [];
+      return data.map(d=>({
+        id:d.space_id,
+        name:d.family_spaces.name,
+        inviteCode:d.family_spaces.invite_code,
+        members:[]
+      }));
+    }catch(e){
+      console.error('getUserSpaces error:', e);
+      return [];
+    }
+  },
+  async loadFamilyData(spaceId){
+    if(!this.sb) return null;
+    try{
+      const {data, error} = await this.sb
+        .from('family_spaces')
+        .select('data, data_version')
+        .eq('id', spaceId)
+        .single();
+      if(error || !data) return null;
+      this.lastPushVersion = data.data_version;
+      return data.data;
+    }catch(e){
+      console.error('loadFamilyData error:', e);
+      return null;
+    }
+  },
+  async saveFamilyData(spaceId, data, currentVersion){
+    if(!this.sb) return;
+    const {data:result, error} = await this.sb
+      .from('family_spaces')
+      .update({data, data_version:currentVersion+1})
+      .eq('id', spaceId)
+      .eq('data_version', currentVersion)
+      .select('data_version')
+      .single();
+    if(error){
+      console.error('Save error:', error);
+      throw new Error('Error al guardar datos');
+    }
+    if(!result){
+      throw new Error('Conflicto: otro usuario modificó los datos');
+    }
+    this.lastPushVersion = result.data_version;
+  },
+  schedulePush(){
+    if(!this.enabled() || !App.state.space || !App.state.data) return;
+    if(this._pushTimer) clearTimeout(this._pushTimer);
+    this._pushTimer = setTimeout(async ()=>{
+      try{
+        const currentVersion = App.state.data.version || 1;
+        await this.saveFamilyData(App.state.space.id, App.state.data, currentVersion);
+      }catch(err){
+        console.error('Push failed:', err);
+        if(err.message.includes('Conflicto')){
+          Notif.show('Conflicto detectado, recargando datos...','warn');
+          await this.refreshFromCloud();
+        } else {
+          Notif.show('Error al sincronizar con la nube','neg');
+        }
+      }
+    }, 800);
+  },
+  async refreshFromCloud(){
+    if(!this.enabled() || !App.state.space) return;
+    const data = await this.loadFamilyData(App.state.space.id);
+    if(data){
+      App.state.data = data;
+      App.render();
+    }
+  },
+  subscribeToChanges(spaceId, onChange){
+    if(!this.enabled() || !this.sb) return;
+    if(this.channel) this.sb.removeChannel(this.channel);
+    this.channel = this.sb.channel('space-'+spaceId)
+      .on('postgres_changes',
+        {event:'UPDATE', schema:'public', table:'family_spaces', filter:'id=eq.'+spaceId},
+        payload => {
+          if(payload.new && payload.new.data_version !== this.lastPushVersion){
+            onChange(payload.new.data);
+          }
+        }
+      )
+      .subscribe();
+  },
+  unsubscribe(){
+    if(this.channel && this.sb){
+      this.sb.removeChannel(this.channel);
+      this.channel = null;
+    }
+  }
+};
+
+// Override Auth methods to use Cloud when enabled
+const _originalAuth = {
+  register: Auth.register.bind(Auth),
+  login: Auth.login.bind(Auth),
+  logout: Auth.logout.bind(Auth),
+  currentUser: Auth.currentUser.bind(Auth)
+};
+
+Auth.register = async function({name, email, password}){
+  if(Cloud.enabled()){
+    return await Cloud.register({name, email, password});
+  }
+  return await _originalAuth.register({name, email, password});
+};
+
+Auth.login = async function({email, password, remember=true}){
+  if(Cloud.enabled()){
+    return await Cloud.login({email, password});
+  }
+  return await _originalAuth.login({email, password, remember});
+};
+
+Auth.logout = async function(){
+  if(Cloud.enabled()){
+    await Cloud.logout();
+    Cloud.unsubscribe();
+    sessionStorage.removeItem('ff_tabid');
+    location.reload();
+  } else {
+    _originalAuth.logout();
+  }
+};
+
+Auth.currentUser = function(){
+  if(Cloud.enabled()){
+    return App.state.user || null;
+  }
+  return _originalAuth.currentUser();
+};
+
+// Override Family methods to use Cloud when enabled
+const _originalFamily = {
+  createSpace: Family.createSpace.bind(Family),
+  joinByCode: Family.joinByCode.bind(Family)
+};
+
+Family.createSpace = async function(name, ownerUserId){
+  if(Cloud.enabled()){
+    return await Cloud.createSpace(name, ownerUserId);
+  }
+  return _originalFamily.createSpace(name, ownerUserId);
+};
+
+Family.joinByCode = async function(code, userId){
+  if(Cloud.enabled()){
+    return await Cloud.joinByCode(code, userId);
+  }
+  return _originalFamily.joinByCode(code, userId);
+};
+

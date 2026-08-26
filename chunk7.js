@@ -487,12 +487,35 @@ window.addEventListener('hashchange',handleHash);
 /* =========================================================================
    INIT
    ========================================================================= */
-(function init(){
+(async function init(){
   initTheme();
   Auth.init();
+  Cloud.init();
+  
+  // Show loading screen if cloud is enabled
+  if(Cloud.enabled()){
+    const root = document.getElementById('app');
+    root.innerHTML = `
+    <div style="min-height:100dvh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
+      <div style="text-align:center">
+        <div class="brand-mark" style="width:64px;height:64px;font-size:24px;margin:0 auto 16px">FF</div>
+        <div style="font-size:18px;font-weight:600;margin-bottom:8px">Cargando...</div>
+        <div style="font-size:13px;color:var(--text-2)">Conectando con la nube</div>
+      </div>
+    </div>`;
+    try{
+      await App.loadFromCloud();
+    }catch(e){
+      console.error('Cloud load error:', e);
+      Notif.show('Error al cargar desde la nube: '+e.message,'neg');
+    }
+  } else {
+    App.load();
+  }
+  
   Sync.init((spaceId)=>{
-    // refresh from storage
-    if(App.state.space && (!spaceId || spaceId===App.state.space.id)){
+    // refresh from storage (only in local mode)
+    if(!Cloud.enabled() && App.state.space && (!spaceId || spaceId===App.state.space.id)){
       App.refreshData();
       App.render();
       Notif.show('Datos actualizados por otro miembro','info',1800);
