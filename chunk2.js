@@ -780,18 +780,102 @@ const Cloud = {
   channel: null,
   lastPushVersion: null,
   _pushTimer: null,
+  _disabled: false,
+  _initError: null,
   enabled(){
+    if(this._disabled) return false;
     return !!(window.FF_CONFIG && window.FF_CONFIG.supabaseUrl && window.FF_CONFIG.supabaseAnonKey && window.supabase);
   },
+  /**
+   * Normalize and validate Supabase URL.
+   * Removes trailing slash and any "/rest/v1" or "/rest/v2" paths that users
+   * sometimes mistakenly paste.
+   */
+  _normalizeUrl(url){
+    if(!url) return '';
+    let u = url.trim();
+    // Remove trailing slashes
+    u = u.replace(/\/+$/, '');
+    // Remove /rest/v1 or /rest/v2 or /rest/vN suffix (user mistake)
+    u = u.replace(/\/rest\/v\d+\/?$/, '');
+    // Remove /auth/v1 suffix (user mistake)
+    u = u.replace(/\/auth\/v\d+\/?$/, '');
+    return u;
+  },
+  /**
+   * Validate that a Supabase anon key looks like a real JWT.
+   * Real Supabase anon keys are JWTs that start with "eyJ" and are ~200 chars.
+   */
+  _isValidKey(key){
+    if(!key || typeof key !== 'string') return false;
+    const k = key.trim();
+    if(!k.startsWith('eyJ')) return false;
+    if(k.length < 100) return false;
+    // JWT has 3 parts separated by dots
+    const parts = k.split('.');
+    if(parts.length !== 3) return false;
+    return true;
+  },
+  validateConfig(){
+    const errors = [];
+    if(!window.FF_CONFIG) {
+      errors.push('FF_CONFIG no está definido. Comprueba que config.js está cargado.');
+      return errors;
+    }
+    if(!window.FF_CONFIG.supabaseUrl) {
+      errors.push('Falta supabaseUrl en config.js');
+    } else if(!/^https?:\/\/.+\..+/.test(window.FF_CONFIG.supabaseUrl)) {
+      errors.push('supabaseUrl no parece una URL válida. Debe ser https://xxxxx.supabase.co');
+    }
+    if(!window.FF_CONFIG.supabaseAnonKey) {
+      errors.push('Falta supabaseAnonKey en config.js. Pégala desde Settings → API → Project API keys → anon public');
+    } else if(!this._isValidKey(window.FF_CONFIG.supabaseAnonKey)) {
+      if(window.FF_CONFIG.supabaseAnonKey.startsWith('sb_publishable_')){
+        errors.push('La clave "sb_publishable_..." NO es la anon key. Busca la que empieza por "eyJ" en Settings → API → Project API keys → anon public');
+      } else {
+        errors.push('supabaseAnonKey no parece válida. Debe empezar por "eyJ" y tener ~200 caracteres');
+      }
+    }
+    if(!window.supabase) {
+      errors.push('Librería de Supabase no cargada');
+    }
+    return errors;
+  },
   init(){
-    if(!this.enabled()) return;
+    if(!window.FF_CONFIG || !window.FF_CONFIG.supabaseUrl || !window.FF_CONFIG.supabaseAnonKey) return;
+    const errors = this.validateConfig();
+    if(errors.length > 0) {
+      console.error('❌ Supabase: configuración inválida:');
+      errors.forEach(e => console.error('   -', e));
+      console.error('ℹ️  La app funcionará en modo DEMO (solo local).');
+      this._disabled = true;
+      this._initError = errors[0];
+      // Show user-friendly error on first load
+      setTimeout(() => {
+        if(typeof Notif !== 'undefined') {
+          Notif.show('Modo demo: la configuración de Supabase es incorrecta. ' + errors[0], 'warn', 8000);
+        }
+      }, 500);
+      return;
+    }
     try{
-      this.sb = window.supabase.createClient(
-        window.FF_CONFIG.supabaseUrl,
-        window.FF_CONFIG.supabaseAnonKey
-      );
+      const url = this._normalizeUrl(window.FF_CONFIG.supabaseUrl);
+      const key = window.FF_CONFIG.supabaseAnonKey.trim();
+      this.sb = window.supabase.createClient(url, key, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true
+        }
+      });
+      console.log('✅ Supabase: conectado a', url);
     }catch(e){
-      console.error('Cloud init error:', e);
+      console.error('❌ Cloud init error:', e);
+      this._disabled = true;
+      this._initError = e.message;
+      if(typeof Notif !== 'undefined') {
+        Notif.show('Error al conectar con Supabase: ' + e.message, 'neg', 8000);
+      }
     }
   },
   async getSession(){
@@ -822,42 +906,98 @@ const Cloud = {
     }
   },
   async register({name, email, password}){
-    if(!this.sb) throw new Error('Cloud not enabled');
-    const {data, error} = await this.sb.auth.signUp({email, password});
-    if(error){
-      if(error.message.includes('confirm')){
-        throw new Error('Revisa tu email para confirmar la cuenta');
+    if(!this.sb) throw new Error('Supabase no configurado correctamente');
+    try {
+      const {data, error} = await this.sb.auth.signUp({email, password});
+      if(error){
+        const msg = (error.message || '').toLowerCase();
+        if(msg.includes('invalid api key') || msg.includes('invalid key') || msg.includes('jwt')){
+          throw new Error('Clave de Supabase inválida. Revisa que supabaseAnonKey empiece por "eyJ" en config.js');
+        }
+        if(msg.includes('invalid path') || msg.includes('not found') || msg.includes('404')){
+          throw new Error('URL de Supabase inválida. No debe terminar en /rest/v1/. Revisa config.js');
+        }
+        if(msg.includes('confirm') || msg.includes('email')){
+          throw new Error('Registro creado. Revisa tu email para confirmar la cuenta (o desactiva "Confirm email" en Supabase → Authentication → Providers → Email)');
+        }
+        if(msg.includes('already') || msg.includes('exist')){
+          throw new Error('Ya existe una cuenta con ese email');
+        }
+        if(msg.includes('signup not') || msg.includes('disabled')){
+          throw new Error('El registro está desactivado en Supabase. Actívalo en Authentication → Providers → Email');
+        }
+        throw new Error('Error de registro: ' + error.message);
       }
-      throw new Error(error.message);
+      if(!data.user) throw new Error('Registro fallido: no se recibió usuario');
+      // Crear perfil (si la sesión está activa)
+      if(data.session){
+        const {error:profileError} = await this.sb
+          .from('profiles')
+          .insert({id:data.user.id, name, email});
+        if(profileError) {
+          console.warn('Profile insert error:', profileError.message);
+          // Puede que la política RLS esté mal — damos un aviso útil
+          if((profileError.message||'').toLowerCase().includes('policy')){
+            console.warn('⚠️  Asegúrate de haber ejecutado supabase-setup.sql en el SQL Editor de Supabase');
+          }
+        }
+      }
+      // Si no hay sesión (email confirmation pendiente), avisar
+      if(!data.session){
+        throw new Error('Registro exitoso. Revisa tu email para confirmar la cuenta (o desactiva "Confirm email" en Supabase → Authentication → Providers → Email).');
+      }
+      return {id:data.user.id, name, email};
+    } catch(e) {
+      if(e.message && e.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con Supabase. Revisa tu conexión y la URL en config.js');
+      }
+      throw e;
     }
-    if(!data.user) throw new Error('Registro fallido');
-    // Crear perfil (si la sesión está activa)
-    if(data.session){
-      const {error:profileError} = await this.sb
-        .from('profiles')
-        .insert({id:data.user.id, name, email});
-      if(profileError) console.warn('Profile insert error:', profileError);
-    }
-    // Si no hay sesión (email confirmation pendiente), avisar
-    if(!data.session){
-      throw new Error('Registro exitoso. Revisa tu email para confirmar la cuenta.');
-    }
-    return {id:data.user.id, name, email};
   },
   async login({email, password}){
-    if(!this.sb) throw new Error('Cloud not enabled');
-    const {data, error} = await this.sb.auth.signInWithPassword({email, password});
-    if(error){
-      if(error.message.includes('Invalid login') || error.message.includes('invalid')){
-        throw new Error('Email o contraseña incorrectos');
+    if(!this.sb) throw new Error('Supabase no configurado correctamente');
+    try {
+      const {data, error} = await this.sb.auth.signInWithPassword({email, password});
+      if(error){
+        const msg = (error.message || '').toLowerCase();
+        if(msg.includes('invalid api key') || msg.includes('invalid key') || msg.includes('jwt')){
+          throw new Error('Clave de Supabase inválida. Revisa config.js');
+        }
+        if(msg.includes('invalid path') || msg.includes('not found') || msg.includes('404')){
+          throw new Error('URL de Supabase inválida. Revisa config.js');
+        }
+        if(msg.includes('invalid login') || msg.includes('invalid_credentials')){
+          throw new Error('Email o contraseña incorrectos');
+        }
+        if(msg.includes('email not confirmed')){
+          throw new Error('Email no confirmado. Revisa tu bandeja de entrada.');
+        }
+        throw new Error('Error de login: ' + error.message);
       }
-      throw new Error(error.message);
+      if(!data.user) throw new Error('Login fallido: no se recibió usuario');
+      // Cargar perfil
+      const profile = await this.getUserProfile();
+      if(!profile) {
+        // Intentar crear el perfil si no existe (caso borde de migración)
+        console.warn('⚠️  Perfil no encontrado, intentando crear...');
+        const {error: insertErr} = await this.sb
+          .from('profiles')
+          .insert({id: data.user.id, name: data.user.user_metadata?.name || data.user.email.split('@')[0], email: data.user.email});
+        if(insertErr) {
+          throw new Error('Perfil no encontrado. Verifica que ejecutaste supabase-setup.sql en el SQL Editor de Supabase.');
+        }
+        // Reintentar
+        const profile2 = await this.getUserProfile();
+        if(!profile2) throw new Error('Perfil no encontrado. Contacta con soporte.');
+        return profile2;
+      }
+      return profile;
+    } catch(e) {
+      if(e.message && e.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con Supabase. Revisa tu conexión y la URL en config.js');
+      }
+      throw e;
     }
-    if(!data.user) throw new Error('Login fallido');
-    // Cargar perfil
-    const profile = await this.getUserProfile();
-    if(!profile) throw new Error('Perfil no encontrado. Contacta con soporte.');
-    return profile;
   },
   async logout(){
     if(!this.sb) return;
