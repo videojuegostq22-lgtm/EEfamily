@@ -65,7 +65,91 @@ const App = {
     this.persistData();
     Sync.broadcast(this.state.space.id);
     Notif.maybeFire(this.state.data,this.state.space.id,u.id);
+    // Schedule push to cloud if enabled
+    if(typeof Cloud !== 'undefined' && Cloud.enabled && Cloud.enabled()) {
+      Cloud.schedulePush();
+    }
     this.render();
+  },
+  /**
+   * Load user session and family data from cloud on startup.
+   * Called by init() when Cloud is enabled.
+   */
+  async loadFromCloud(){
+    if(typeof Cloud === 'undefined' || !Cloud.enabled()) return;
+    try {
+      const result = await Cloud.bootstrap();
+      if(result.user){
+        this.state.user = result.user;
+        // Also persist to local session for cross-reloads
+        DB.session.set(Auth.tabId, {
+          userId: result.user.id,
+          spaceId: result.space ? result.space.id : null,
+          cloudProfile: result.user
+        }, true);
+      }
+      if(result.space){
+        this.state.space = result.space;
+        // Persist space to local DB as well for fallback
+        const spaces = DB.spaces();
+        const idx = spaces.findIndex(s=>s.id===result.space.id);
+        if(idx >= 0) spaces[idx] = result.space;
+        else spaces.push(result.space);
+        DB.saveSpaces(spaces);
+        // Load member profiles from cloud and save to local DB
+        // so Family.getUserById works properly
+        if(result.space.members && result.space.members.length > 0){
+          try {
+            const memberIds = result.space.members.map(m=>m.userId);
+            const {data: profiles} = await Cloud.sb
+              .from('profiles')
+              .select('id,name,email,created_at')
+              .in('id', memberIds);
+            if(profiles && profiles.length > 0){
+              const users = DB.users();
+              profiles.forEach(p => {
+                const existing = users.findIndex(u=>u.id===p.id);
+                const userData = {
+                  id: p.id,
+                  name: p.name,
+                  email: p.email,
+                  createdAt: p.created_at,
+                  cloudUser: true
+                };
+                if(existing >= 0) users[existing] = {...users[existing], ...userData};
+                else users.push(userData);
+              });
+              DB.saveUsers(users);
+            }
+          } catch(e){
+            console.warn('⚠️  Could not load member profiles:', e.message);
+          }
+        }
+      }
+      if(result.data){
+        this.state.data = result.data;
+        DB.saveData(result.space.id, result.data);
+        // Run migration
+        if(Family.migrateCategories(result.data)){
+          DB.saveData(result.space.id, result.data);
+        }
+      }
+      // Subscribe to realtime changes
+      if(result.space) {
+        Cloud.subscribeToChanges(result.space.id, (newData) => {
+          this.state.data = newData;
+          DB.saveData(result.space.id, newData);
+          this.render();
+          Notif.show('Datos actualizados por otro miembro','info',1800);
+        });
+      }
+    } catch(e) {
+      console.error('Cloud bootstrap error:', e);
+      // Don't crash — fall back to local auth
+      if(typeof Notif !== 'undefined') {
+        Notif.show('Error al cargar desde la nube: ' + (e.message||e), 'neg', 5000);
+      }
+    }
   }
 };
 
@@ -170,24 +254,67 @@ function renderAuth(){
   const handleSubmit = async e=>{
     if(e) e.preventDefault();
     const errEl = root.querySelector('#auth-error');
-    errEl.textContent='';
-    const email = root.querySelector('#auth-email').value;
+    const submitBtn = root.querySelector('#auth-submit');
+    errEl.innerHTML = '';
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Procesando...';
+    const email = root.querySelector('#auth-email').value.trim();
     const pw = root.querySelector('#auth-pw').value;
     const remember = root.querySelector('#remember').checked;
     try{
       if(tab==='register'){
         const name = root.querySelector('#reg-name').value.trim();
-        const u = await Auth.register({name,email,password:pw});
-        await Auth.login({email,password:pw,remember});
-        App.state.user = u;
-        App.nav('onboarding');
+        if(!name) throw new Error('Introduce tu nombre');
+        if(!email) throw new Error('Introduce tu email');
+        if(!pw) throw new Error('Introduce una contraseña');
+        try {
+          const u = await Auth.register({name,email,password:pw});
+          // Try to login immediately (works if Confirm email is disabled)
+          try {
+            await Auth.login({email,password:pw,remember});
+            App.state.user = u;
+            App.state.space = Auth.currentSpace();
+            if(App.state.space){
+              App.state.data = DB.data(App.state.space.id);
+              if(App.state.data && Family.migrateCategories(App.state.data)){
+                DB.saveData(App.state.space.id, App.state.data);
+              }
+              App.nav('dashboard');
+            } else {
+              App.nav('onboarding');
+            }
+          } catch(loginErr){
+            if(loginErr && loginErr.code === 'EMAIL_NOT_CONFIRMED'){
+              // Show confirmation screen
+              showEmailConfirmationScreen(email, name);
+              return;
+            }
+            // Other login error after successful register
+            Notif.show('Cuenta creada, pero no se pudo iniciar sesión: ' + loginErr.message, 'warn', 5000);
+            App.state.user = u;
+            App.nav('onboarding');
+          }
+        } catch(regErr) {
+          if(regErr && regErr.code === 'EMAIL_NOT_CONFIRMED'){
+            showEmailConfirmationScreen(regErr.email || email, name);
+            return;
+          }
+          throw regErr;
+        }
       } else if(tab==='login'){
         const u = await Auth.login({email,password:pw,remember});
         App.state.user = u;
+        // In Cloud mode, reload full state from cloud to get latest data
+        if(typeof Cloud !== 'undefined' && Cloud.enabled && Cloud.enabled()){
+          try {
+            await App.loadFromCloud();
+          } catch(e){
+            console.warn('⚠️  Could not reload from cloud after login:', e.message);
+          }
+        }
         App.state.space = Auth.currentSpace();
         if(App.state.space){
           App.state.data = DB.data(App.state.space.id);
-          // Run migration
           if(App.state.data && Family.migrateCategories(App.state.data)){
             DB.saveData(App.state.space.id, App.state.data);
           }
@@ -198,18 +325,15 @@ function renderAuth(){
       } else {
         const code = root.querySelector('#join-code').value.trim().toUpperCase();
         if(!code) throw new Error('Introduce el código de invitación');
-        // ensure user is logged in first
         const u = Auth.currentUser() || await Auth.login({email,password:pw,remember});
         App.state.user = u;
-        const sp = Family.joinByCode(code,u.id);
+        const sp = await Family.joinByCode(code,u.id);
         Auth.joinSpace(sp.id);
         App.state.space = sp;
         App.state.data = DB.data(sp.id);
-        // Run migration
         if(App.state.data && Family.migrateCategories(App.state.data)){
           DB.saveData(sp.id, App.state.data);
         }
-        // notify other members
         const d = App.state.data;
         Notif.add(d,sp.id,{text:`${u.name} se ha unido a la economía familiar`,kind:'info'});
         DB.saveData(sp.id,d);
@@ -219,9 +343,77 @@ function renderAuth(){
       }
     }catch(err){
       console.error('[auth]',err);
-      errEl.textContent = err.message || 'Error desconocido';
+      if(err && err.code === 'EMAIL_NOT_CONFIRMED'){
+        showEmailConfirmationScreen(err.email || email);
+      } else {
+        errEl.textContent = err.message || 'Error desconocido';
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = tab==='register'?'Crear cuenta': tab==='join'?'Unirme a economía':'Entrar';
     }
   };
+
+  function showEmailConfirmationScreen(email, name){
+    const card = root.querySelector('.auth-card');
+    if(!card) return;
+    card.innerHTML = `
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:48px;margin-bottom:12px">📧</div>
+        <h2 style="margin:0 0 8px;font-size:20px">Revisa tu email</h2>
+        <p style="font-size:14px;color:var(--text-2);margin-bottom:20px">
+          Hemos enviado un email de confirmación a<br>
+          <b style="color:var(--text)">${h.esc(email)}</b>
+        </p>
+        <div class="card" style="background:var(--surface-2);padding:16px;margin-bottom:18px;text-align:left">
+          <div style="font-size:13px;color:var(--text-2);margin-bottom:8px"><b>📋 Pasos a seguir:</b></div>
+          <ol style="font-size:13px;color:var(--text-2);margin:0;padding-left:20px;line-height:1.6">
+            <li>Abre tu bandeja de entrada</li>
+            <li>Haz click en el enlace de confirmación</li>
+            <li>Vuelve aquí e inicia sesión</li>
+          </ol>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-primary" id="resend-email-btn">📬 Reenviar email</button>
+          <button class="btn btn-ghost" id="back-to-login">← Volver al inicio de sesión</button>
+        </div>
+        <div id="resend-msg" style="margin-top:12px;font-size:13px;color:var(--text-2)"></div>
+        <div class="hint" style="margin-top:16px">
+          <details style="text-align:left">
+            <summary style="cursor:pointer;font-size:12.5px;color:var(--text-2)">¿No quieres confirmar emails? (modo testing)</summary>
+            <div style="margin-top:8px;font-size:12px;color:var(--text-3);padding:10px;background:var(--surface-2);border-radius:8px">
+              En Supabase → <b>Authentication</b> → <b>Providers</b> → <b>Email</b>, desactiva
+              "Confirm email" y guarda. Los nuevos registros no requerirán confirmación.
+            </div>
+          </details>
+        </div>
+      </div>
+    `;
+    root.querySelector('#resend-email-btn')?.addEventListener('click', async ()=>{
+      const btn = root.querySelector('#resend-email-btn');
+      const msg = root.querySelector('#resend-msg');
+      btn.disabled = true;
+      btn.textContent = 'Enviando...';
+      try {
+        if(typeof Cloud !== 'undefined' && Cloud.resendConfirmation){
+          await Cloud.resendConfirmation(email);
+          msg.textContent = '✅ Email reenviado correctamente';
+          msg.style.color = 'var(--pos)';
+        } else {
+          throw new Error('Cloud no disponible');
+        }
+      } catch(e) {
+        msg.textContent = '❌ ' + (e.message || 'Error al reenviar');
+        msg.style.color = 'var(--neg)';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '📬 Reenviar email';
+      }
+    });
+    root.querySelector('#back-to-login')?.addEventListener('click', ()=>{
+      renderAuth();
+    });
+  }
   root.querySelector('#auth-form').addEventListener('submit', handleSubmit);
   // Also bind the submit button directly as fallback
   root.querySelector('#auth-submit')?.addEventListener('click', handleSubmit);
@@ -308,19 +500,38 @@ function renderOnboarding(){
     };
 
     root.querySelector('#ob-back').addEventListener('click',()=>{ collect(); if(step>0){step--;renderStep();} });
-    root.querySelector('#ob-next').addEventListener('click',()=>{
+    root.querySelector('#ob-next').addEventListener('click',async ()=>{
       collect();
+      const btn = root.querySelector('#ob-next');
       if(step<steps.length-1){ step++; renderStep(); }
-      else finishOnboarding();
+      else {
+        btn.disabled = true;
+        btn.textContent = 'Creando economía...';
+        try {
+          await finishOnboarding();
+        } catch(e) {
+          console.error('Onboarding error:', e);
+          Notif.show('Error al crear la economía: ' + (e.message||e), 'neg', 6000);
+          btn.disabled = false;
+          btn.textContent = 'Crear economía →';
+        }
+      }
     });
   };
   renderStep();
 
-  function finishOnboarding(){
-    const sp = Family.createSpace(answers.spaceName, App.state.user.id);
+  async function finishOnboarding(){
+    console.log('🚀 Creando espacio familiar:', answers.spaceName);
+    const sp = await Family.createSpace(answers.spaceName, App.state.user.id);
+    console.log('✅ Espacio creado:', sp.id);
     Auth.joinSpace(sp.id);
     App.state.space = sp;
     App.state.data = DB.data(sp.id);
+    if(!App.state.data){
+      // Cloud mode might not have saved locally yet; initialize empty
+      App.state.data = Family.emptyData();
+      DB.saveData(sp.id, App.state.data);
+    }
     const d = App.state.data;
     // create default accounts
     const bankAcc = {id:uid('a'),name:'Cuenta Nómina',type:'bank',initialBalance:answers.savings||0,color:'#6366F1',createdBy:App.state.user.id,createdAt:nowISO(),archived:false};
@@ -332,9 +543,7 @@ function renderOnboarding(){
       id:uid('t'), type:'income', amount:answers.income, date:todayISO(), categoryId:salaryCat.id, accountId:bankAcc.id,
       description:'Ingreso inicial (configuración)', createdBy:App.state.user.id, createdAt:nowISO(), updatedAt:nowISO(), version:1
     });
-    // create a default monthly budget (30% saving rate target)
     const targetSaving = Math.max(0,answers.income - answers.expense);
-    // create budgets for main categories based on split of expenses
     const expenseSplits = [
       {name:'Alimentación',ratio:0.18},
       {name:'Vivienda',ratio:0.30},
@@ -360,7 +569,17 @@ function renderOnboarding(){
     }
     Activity.log(d,sp.id,{userId:App.state.user.id,verb:'creó',entity:'family',label:'Economía familiar'});
     DB.saveData(sp.id,d);
-    // Invite screen
+    // Push to cloud if enabled
+    if(typeof Cloud !== 'undefined' && Cloud.enabled && Cloud.enabled()){
+      Cloud.schedulePush();
+      Cloud.subscribeToChanges(sp.id, (newData) => {
+        App.state.data = newData;
+        DB.saveData(sp.id, newData);
+        App.render();
+        Notif.show('Datos actualizados por otro miembro','info',1800);
+      });
+    }
+    // Go to invite screen
     App.state.route='invite';
     App.render();
   }

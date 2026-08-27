@@ -914,46 +914,58 @@ const Cloud = {
   async register({name, email, password}){
     if(!this.sb) throw new Error('Supabase no configurado correctamente');
     try {
-      const {data, error} = await this.sb.auth.signUp({email, password});
+      // IMPORTANTE: pasamos el nombre como metadata para el trigger handle_new_user
+      const {data, error} = await this.sb.auth.signUp({
+        email, password,
+        options: {
+          data: { name }  // Esto se usa en el trigger SQL para crear el perfil
+        }
+      });
       if(error){
         const msg = (error.message || '').toLowerCase();
         if(msg.includes('invalid api key') || msg.includes('invalid key') || msg.includes('jwt')){
-          throw new Error('Clave de Supabase inválida. Revisa que supabaseAnonKey empiece por "eyJ" en config.js');
+          throw new Error('Clave de Supabase inválida. Revisa config.js');
         }
         if(msg.includes('invalid path') || msg.includes('not found') || msg.includes('404')){
-          throw new Error('URL de Supabase inválida. No debe terminar en /rest/v1/. Revisa config.js');
+          throw new Error('URL de Supabase inválida. Revisa config.js');
         }
-        if(msg.includes('confirm') || msg.includes('email')){
-          throw new Error('Registro creado. Revisa tu email para confirmar la cuenta (o desactiva "Confirm email" en Supabase → Authentication → Providers → Email)');
-        }
-        if(msg.includes('already') || msg.includes('exist')){
-          throw new Error('Ya existe una cuenta con ese email');
+        if(msg.includes('already') || msg.includes('exist') || msg.includes('registered')){
+          throw new Error('Ya existe una cuenta con ese email. Intenta iniciar sesión o usa "Recuperar contraseña".');
         }
         if(msg.includes('signup not') || msg.includes('disabled')){
-          throw new Error('El registro está desactivado en Supabase. Actívalo en Authentication → Providers → Email');
+          throw new Error('El registro está desactivado en Supabase.');
+        }
+        if(msg.includes('confirm') || msg.includes('email')){
+          // Email confirmation active - user created but needs to confirm
+          throw {code: 'EMAIL_NOT_CONFIRMED', message: 'Cuenta creada. Revisa tu email para confirmar la cuenta.', email};
         }
         throw new Error('Error de registro: ' + error.message);
       }
       if(!data.user) throw new Error('Registro fallido: no se recibió usuario');
-      // Crear perfil (si la sesión está activa)
-      if(data.session){
+      
+      // Si no hay sesión, significa que "Confirm email" está activado
+      if(!data.session){
+        // Intentar login inmediatamente (funciona si Confirm email está desactivado)
+        // En algunos casos la sesión puede estar pendiente de confirmación
+        throw {code: 'EMAIL_NOT_CONFIRMED', message: 'Cuenta creada. Revisa tu email para confirmar la cuenta (o desactiva "Confirm email" en Supabase → Authentication → Providers → Email).', email};
+      }
+      
+      // Intentar crear perfil manualmente por si el trigger no existe
+      try {
         const {error:profileError} = await this.sb
           .from('profiles')
           .insert({id:data.user.id, name, email});
         if(profileError) {
-          console.warn('Profile insert error:', profileError.message);
-          // Puede que la política RLS esté mal — damos un aviso útil
-          if((profileError.message||'').toLowerCase().includes('policy')){
-            console.warn('⚠️  Asegúrate de haber ejecutado supabase-setup.sql en el SQL Editor de Supabase');
-          }
+          console.warn('⚠️  Profile insert warning (puede ser normal si el trigger ya creó el perfil):', profileError.message);
         }
+      } catch(pe) {
+        console.warn('⚠️  Profile creation warning:', pe.message);
       }
-      // Si no hay sesión (email confirmation pendiente), avisar
-      if(!data.session){
-        throw new Error('Registro exitoso. Revisa tu email para confirmar la cuenta (o desactiva "Confirm email" en Supabase → Authentication → Providers → Email).');
-      }
+      
       return {id:data.user.id, name, email};
     } catch(e) {
+      // Re-throw our custom errors as-is
+      if(e && e.code === 'EMAIL_NOT_CONFIRMED') throw e;
       if(e.message && e.message.includes('fetch')) {
         throw new Error('No se pudo conectar con Supabase. Revisa tu conexión y la URL en config.js');
       }
@@ -972,33 +984,43 @@ const Cloud = {
         if(msg.includes('invalid path') || msg.includes('not found') || msg.includes('404')){
           throw new Error('URL de Supabase inválida. Revisa config.js');
         }
-        if(msg.includes('invalid login') || msg.includes('invalid_credentials')){
-          throw new Error('Email o contraseña incorrectos');
-        }
         if(msg.includes('email not confirmed')){
-          throw new Error('Email no confirmado. Revisa tu bandeja de entrada.');
+          throw {code: 'EMAIL_NOT_CONFIRMED', message: 'Email no confirmado. Revisa tu bandeja de entrada para confirmar tu cuenta.', email};
+        }
+        if(msg.includes('invalid login') || msg.includes('invalid_credentials') || msg.includes('invalid_credentials')){
+          throw new Error('Email o contraseña incorrectos. Si te registraste pero no puedes entrar, probablemente necesites confirmar tu email.');
         }
         throw new Error('Error de login: ' + error.message);
       }
       if(!data.user) throw new Error('Login fallido: no se recibió usuario');
+      
+      // Esperar un poco para que el trigger cree el perfil (puede haber delay)
+      await new Promise(r => setTimeout(r, 200));
+      
       // Cargar perfil
-      const profile = await this.getUserProfile();
+      let profile = await this.getUserProfile();
       if(!profile) {
-        // Intentar crear el perfil si no existe (caso borde de migración)
+        // Intentar crear el perfil si no existe (caso borde de migración o trigger ausente)
         console.warn('⚠️  Perfil no encontrado, intentando crear...');
+        const profileName = data.user.user_metadata?.name || data.user.email.split('@')[0];
         const {error: insertErr} = await this.sb
           .from('profiles')
-          .insert({id: data.user.id, name: data.user.user_metadata?.name || data.user.email.split('@')[0], email: data.user.email});
+          .insert({id: data.user.id, name: profileName, email: data.user.email});
         if(insertErr) {
-          throw new Error('Perfil no encontrado. Verifica que ejecutaste supabase-setup.sql en el SQL Editor de Supabase.');
+          console.warn('⚠️  No se pudo crear perfil:', insertErr.message);
+          console.warn('⚠️  Asegúrate de haber ejecutado el SQL actualizado (con trigger on_auth_user_created)');
         }
-        // Reintentar
-        const profile2 = await this.getUserProfile();
-        if(!profile2) throw new Error('Perfil no encontrado. Contacta con soporte.');
-        return profile2;
+        // Reintentar cargar perfil
+        profile = await this.getUserProfile();
+        if(!profile) {
+          // Fallback: crear perfil in-memory
+          return {id: data.user.id, name: profileName, email: data.user.email, createdAt: data.user.created_at};
+        }
       }
       return profile;
     } catch(e) {
+      // Re-throw our custom errors as-is
+      if(e && e.code === 'EMAIL_NOT_CONFIRMED') throw e;
       if(e.message && e.message.includes('fetch')) {
         throw new Error('No se pudo conectar con Supabase. Revisa tu conexión y la URL en config.js');
       }
@@ -1011,6 +1033,22 @@ const Cloud = {
       await this.sb.auth.signOut();
     }catch(e){
       console.error('Logout error:', e);
+    }
+  },
+  /**
+   * Resend confirmation email to user
+   */
+  async resendConfirmation(email){
+    if(!this.sb) throw new Error('Supabase no configurado');
+    try{
+      const {error} = await this.sb.auth.resend({
+        type: 'signup',
+        email: email
+      });
+      if(error) throw new Error('No se pudo reenviar el email: ' + error.message);
+      return true;
+    }catch(e){
+      throw new Error('Error al reenviar email de confirmación: ' + e.message);
     }
   },
   async createSpace(name, userId){
@@ -1059,15 +1097,27 @@ const Cloud = {
     try{
       const {data, error} = await this.sb
         .from('family_members')
-        .select('space_id,family_spaces(*)')
+        .select('space_id,family_spaces(*,family_members(*))')
         .eq('user_id', userId);
-      if(error || !data) return [];
-      return data.map(d=>({
-        id:d.space_id,
-        name:d.family_spaces.name,
-        inviteCode:d.family_spaces.invite_code,
-        members:[]
-      }));
+      if(error || !data) {
+        console.warn('getUserSpaces query error:', error?.message);
+        return [];
+      }
+      return data.map(d=>{
+        const sp = d.family_spaces;
+        const allMembers = sp.family_members || [];
+        return {
+          id: sp.id,
+          name: sp.name,
+          inviteCode: sp.invite_code,
+          createdAt: sp.created_at,
+          members: allMembers.map(m=>({
+            userId: m.user_id,
+            joinedAt: m.joined_at,
+            role: m.role
+          }))
+        };
+      });
     }catch(e){
       console.error('getUserSpaces error:', e);
       return [];
@@ -1152,6 +1202,50 @@ const Cloud = {
       this.sb.removeChannel(this.channel);
       this.channel = null;
     }
+  },
+  /**
+   * Load user's family space and data from cloud on app startup.
+   * Called from App.loadFromCloud() during init.
+   */
+  async bootstrap(){
+    if(!this.enabled()) return {user:null, space:null, data:null};
+    // 1) Check current session
+    const session = await this.getSession();
+    if(!session || !session.user){
+      return {user:null, space:null, data:null};
+    }
+    // 2) Get user profile
+    const profile = await this.getUserProfile();
+    if(!profile){
+      // Try to create fallback profile
+      const profileName = session.user.user_metadata?.name || session.user.email.split('@')[0];
+      try {
+        await this.sb.from('profiles').insert({
+          id: session.user.id,
+          name: profileName,
+          email: session.user.email
+        });
+      } catch(e) {
+        console.warn('⚠️  Could not create fallback profile:', e.message);
+      }
+      const p2 = await this.getUserProfile();
+      if(!p2){
+        // Use session user as fallback
+        return {user:{id:session.user.id, name:profileName, email:session.user.email}, space:null, data:null};
+      }
+      const spaces = await this.getUserSpaces(p2.id);
+      if(spaces.length === 0) return {user:p2, space:null, data:null};
+      const space = spaces[0];
+      const data = await this.loadFamilyData(space.id);
+      return {user:p2, space, data};
+    }
+    // 3) Get user's spaces
+    const spaces = await this.getUserSpaces(profile.id);
+    if(spaces.length === 0) return {user:profile, space:null, data:null};
+    // 4) Load first space's data
+    const space = spaces[0];
+    const data = await this.loadFamilyData(space.id);
+    return {user:profile, space, data};
   }
 };
 
@@ -1172,7 +1266,37 @@ Auth.register = async function({name, email, password}){
 
 Auth.login = async function({email, password, remember=true}){
   if(Cloud.enabled()){
-    return await Cloud.login({email, password});
+    const profile = await Cloud.login({email, password});
+    // Persist session to local storage for cross-reload consistency
+    if(profile && profile.id){
+      DB.session.set(this.tabId, {
+        userId: profile.id,
+        spaceId: null,  // will be set by loadFromCloud
+        cloudProfile: profile
+      }, remember);
+      // Try to find and associate the user's space
+      try {
+        const spaces = await Cloud.getUserSpaces(profile.id);
+        if(spaces && spaces.length > 0){
+          const sp = spaces[0];
+          // Update session with spaceId
+          DB.session.set(this.tabId, {
+            userId: profile.id,
+            spaceId: sp.id,
+            cloudProfile: profile
+          }, remember);
+          // Save space to local DB for fallback
+          const localSpaces = DB.spaces();
+          const idx = localSpaces.findIndex(s=>s.id===sp.id);
+          if(idx >= 0) localSpaces[idx] = sp;
+          else localSpaces.push(sp);
+          DB.saveSpaces(localSpaces);
+        }
+      } catch(e) {
+        console.warn('⚠️  Could not load user spaces on login:', e.message);
+      }
+    }
+    return profile;
   }
   return await _originalAuth.login({email, password, remember});
 };
@@ -1193,6 +1317,33 @@ Auth.currentUser = function(){
     return App.state.user || null;
   }
   return _originalAuth.currentUser();
+};
+
+Auth.currentSpace = function(){
+  if(Cloud.enabled()){
+    // In Cloud mode, rely on App.state.space (set by loadFromCloud or login)
+    if(App.state.space) return App.state.space;
+    // Fallback to DB session
+    const s = DB.session.get(this.tabId);
+    if(!s || !s.spaceId) return null;
+    const spaces = DB.spaces();
+    const sp = spaces.find(x=>x.id===s.spaceId);
+    return sp || null;
+  }
+  // Original behavior for local mode
+  const s = DB.session.get(this.tabId);
+  if(!s) return null;
+  const spaces = DB.spaces();
+  if(s.spaceId){
+    const sp = spaces.find(x=>x.id===s.spaceId);
+    if(sp && sp.members.some(m=>m.userId===s.userId)) return sp;
+  }
+  const owned = spaces.find(sp=>sp.members.some(m=>m.userId===s.userId));
+  if(owned){
+    DB.session.set(this.tabId,{...s,spaceId:owned.id},true);
+    return owned;
+  }
+  return null;
 };
 
 // Override Family methods to use Cloud when enabled
