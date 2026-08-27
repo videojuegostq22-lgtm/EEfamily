@@ -14,8 +14,8 @@
 
 window.FF_CONFIG = {
   // URL de tu proyecto Supabase (ej: https://xyz.supabase.co)
-  supabaseUrl: '',
+  supabaseUrl: 'https://bbarapgatlqndxlbdyld.supabase.co/rest/v1/',
 
   // Clave pública (anon key) de tu proyecto Supabase
-  supabaseAnonKey: ''
+  supabaseAnonKey: 'sb_publishable_TFfOq18G2T7ii7N4V7gdTg_hc7X0nyN'
 };
