@@ -10,13 +10,14 @@
 // 3. Haz clic en "API" (dentro de "Configuration")
 // 4. Copia EXACTAMENTE estos dos valores:
 //    - "Project URL" (ej: https://abcdefgh.supabase.co)
-//    - "Project API keys" → "anon" → "public" (empieza por "eyJ...")
+//    - "Project API keys" → "Publishable key" (formato nuevo 2025: sb_publishable_xxxxx)
+//      O BIEN la "anon key" legacy (formato antiguo: eyJxxxxx) — ambas funcionan
 //
 // ⚠️ ERRORES COMUNES:
 // - NO pongas "/rest/v1/" al final de la URL
-// - NO uses la clave "service_role" (es secreta)
-// - NO uses "sb_publishable_..." (esa es la Management API, NO la anon key)
-// - La anon key SIEMPRE empieza por "eyJ" y tiene ~200 caracteres
+// - NO uses la "Secret key" (esa es solo para backend, nunca para el cliente)
+// - La "Publishable key" (sb_publishable_...) SÍ es válida para el cliente
+// - La "anon key" legacy (eyJ...) también es válida
 //
 // Si dejas estos valores vacíos, la app funcionará en modo demo (solo local)
 // ============================================================================
@@ -27,8 +28,11 @@ window.FF_CONFIG = {
   // INCORRECTO: https://abcdefgh.supabase.co/rest/v1/
   supabaseUrl: 'https://bbarapgatlqndxlbdyld.supabase.co',
 
-  // Clave pública ANON de tu proyecto Supabase
-  // Debe empezar por "eyJ" y tener ~200 caracteres
-  // NO uses "sb_publishable_..." ni la clave "service_role"
-  supabaseAnonKey: 'sb_publishable_TFfOq18G2T7ii7N4V7gdTg_hc7X0nyN' // ← PEGA AQUÍ tu anon key de Supabase (Settings → API → Project API keys → anon public)
+  // Clave pública de tu proyecto Supabase
+  // Puede ser:
+  //   - Formato nuevo 2025: "sb_publishable_xxxxx" (Publishable key)
+  //   - Formato legacy: "eyJ..." (~200 chars, anon key)
+  // Ambas funcionan igual. Copia la que aparezca como "Publishable" o "anon"
+  // en Settings → API → Project API keys
+  supabaseAnonKey: 'sb_publishable_TFfOq18G2T7ii7N4V7gdTg_hc7X0nyN'
 };

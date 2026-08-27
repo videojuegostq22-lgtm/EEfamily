@@ -803,15 +803,25 @@ const Cloud = {
     return u;
   },
   /**
-   * Validate that a Supabase anon key looks like a real JWT.
-   * Real Supabase anon keys are JWTs that start with "eyJ" and are ~200 chars.
+   * Validate that a Supabase anon key looks valid.
+   * 
+   * Two accepted formats:
+   *   - Legacy (pre-2025): JWT starting with "eyJ", ~200 chars, 3 parts
+   *   - New (2025+): Publishable key starting with "sb_publishable_"
+   * 
+   * Supabase renamed "anon key" → "Publishable key" and changed the format,
+   * but both are fully valid for client-side usage.
    */
   _isValidKey(key){
     if(!key || typeof key !== 'string') return false;
     const k = key.trim();
+    // New 2025 format: sb_publishable_xxxxx
+    if(k.startsWith('sb_publishable_')) {
+      return k.length > 20;
+    }
+    // Legacy JWT format: eyJxxxxx.yyyyy.zzzzz
     if(!k.startsWith('eyJ')) return false;
     if(k.length < 100) return false;
-    // JWT has 3 parts separated by dots
     const parts = k.split('.');
     if(parts.length !== 3) return false;
     return true;
@@ -828,13 +838,9 @@ const Cloud = {
       errors.push('supabaseUrl no parece una URL válida. Debe ser https://xxxxx.supabase.co');
     }
     if(!window.FF_CONFIG.supabaseAnonKey) {
-      errors.push('Falta supabaseAnonKey en config.js. Pégala desde Settings → API → Project API keys → anon public');
+      errors.push('Falta supabaseAnonKey en config.js. Pégala desde Settings → API → Project API keys → Publishable key (o la anon key legacy)');
     } else if(!this._isValidKey(window.FF_CONFIG.supabaseAnonKey)) {
-      if(window.FF_CONFIG.supabaseAnonKey.startsWith('sb_publishable_')){
-        errors.push('La clave "sb_publishable_..." NO es la anon key. Busca la que empieza por "eyJ" en Settings → API → Project API keys → anon public');
-      } else {
-        errors.push('supabaseAnonKey no parece válida. Debe empezar por "eyJ" y tener ~200 caracteres');
-      }
+      errors.push('supabaseAnonKey no parece válida. Debe empezar por "eyJ..." (JWT legacy) o "sb_publishable_..." (formato nuevo 2025). Cópiala desde Settings → API → Project API keys → Publishable key');
     }
     if(!window.supabase) {
       errors.push('Librería de Supabase no cargada');
