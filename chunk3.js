@@ -471,6 +471,10 @@ function renderOnboarding(){
     root.innerHTML = `
     <div class="wizard">
       <div class="wizard-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="font-size:12px;color:var(--text-3)">👤 ${h.esc(u.name)} · ${h.esc(u.email)}</div>
+          <button class="btn btn-ghost" id="ob-logout" style="font-size:12px;padding:4px 10px">Cerrar sesión</button>
+        </div>
         <div class="wizard-steps">
           ${steps.map((_,i)=>`<i class="${i<step?'done':i===step?'active':''}"></i>`).join('')}
         </div>
@@ -515,6 +519,13 @@ function renderOnboarding(){
           btn.disabled = false;
           btn.textContent = 'Crear economía →';
         }
+      }
+    });
+    // Logout button - allows stuck users to return to login screen
+    root.querySelector('#ob-logout')?.addEventListener('click', async ()=>{
+      if(confirm('¿Cerrar sesión? Volverás a la pantalla de inicio de sesión.')){
+        try { await Auth.logout(); } catch(e){ /* ignore */ }
+        renderAuth();
       }
     });
   };
@@ -594,6 +605,10 @@ function renderInvite(){
   root.innerHTML = `
   <div class="wizard">
     <div class="wizard-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:12px;color:var(--text-3)">👤 ${h.esc(App.state.user.name)}</div>
+        <button class="btn btn-ghost" id="inv-logout" style="font-size:12px;padding:4px 10px">Cerrar sesión</button>
+      </div>
       <h2 style="margin-top:0">✅ Economía familiar creada</h2>
       <p class="lead"><b>${h.esc(sp.name)}</b>. Ahora invita a tu pareja para compartir los datos.</p>
       <div class="card" style="padding:18px;margin-bottom:14px">
@@ -623,5 +638,12 @@ function renderInvite(){
   const goDash = ()=>{ App.state.route='dashboard'; location.hash='#/dashboard'; App.render(); };
   root.querySelector('#skip-invite').addEventListener('click',goDash);
   root.querySelector('#go-dashboard').addEventListener('click',goDash);
+  // Logout button for users who want to switch accounts
+  root.querySelector('#inv-logout')?.addEventListener('click', async ()=>{
+    if(confirm('¿Cerrar sesión? Volverás a la pantalla de inicio de sesión.')){
+      try { await Auth.logout(); } catch(e){ /* ignore */ }
+      renderAuth();
+    }
+  });
 }
 

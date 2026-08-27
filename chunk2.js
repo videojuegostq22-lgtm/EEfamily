@@ -1092,32 +1092,64 @@ const Cloud = {
       members:space.family_members.map(m=>({userId:m.user_id, joinedAt:m.joined_at}))
     };
   },
+  /**
+   * Get all spaces the user belongs to.
+   * Uses a two-step query to avoid RLS recursion issues:
+   *   1) Query family_members for the user's space_ids (simple policy: user_id = auth.uid())
+   *   2) Load each family_space individually
+   *   3) Load members for each space via RPC helper (bypasses RLS)
+   */
   async getUserSpaces(userId){
     if(!this.sb) return [];
     try{
-      const {data, error} = await this.sb
+      // Step 1: get space_ids where user is a member
+      // This query uses the simple policy: user_id = auth.uid()
+      const {data: memberships, error: memError} = await this.sb
         .from('family_members')
-        .select('space_id,family_spaces(*,family_members(*))')
+        .select('space_id')
         .eq('user_id', userId);
-      if(error || !data) {
-        console.warn('getUserSpaces query error:', error?.message);
+      if(memError || !memberships || memberships.length === 0) {
+        if(memError) console.warn('getUserSpaces step1 error:', memError.message);
         return [];
       }
-      return data.map(d=>{
-        const sp = d.family_spaces;
-        const allMembers = sp.family_members || [];
-        return {
+      const spaceIds = memberships.map(m => m.space_id);
+      // Step 2: load each space
+      const {data: spaces, error: spError} = await this.sb
+        .from('family_spaces')
+        .select('id, name, invite_code, created_at, created_by')
+        .in('id', spaceIds);
+      if(spError || !spaces) {
+        console.warn('getUserSpaces step2 error:', spError?.message);
+        return [];
+      }
+      // Step 3: for each space, load members via RPC helper
+      const result = [];
+      for(const sp of spaces) {
+        let members = [{userId, joinedAt: sp.created_at, role: 'member'}];
+        try {
+          const {data: memberRows, error: mErr} = await this.sb
+            .rpc('get_space_members', {p_space_id: sp.id});
+          if(!mErr && memberRows && memberRows.length > 0){
+            members = memberRows.map(m => ({
+              userId: m.user_id,
+              name: m.name,
+              email: m.email,
+              joinedAt: m.joined_at,
+              role: m.role
+            }));
+          }
+        } catch(me) {
+          console.warn('⚠️  Could not load members for space', sp.id, me.message);
+        }
+        result.push({
           id: sp.id,
           name: sp.name,
           inviteCode: sp.invite_code,
           createdAt: sp.created_at,
-          members: allMembers.map(m=>({
-            userId: m.user_id,
-            joinedAt: m.joined_at,
-            role: m.role
-          }))
-        };
-      });
+          members
+        });
+      }
+      return result;
     }catch(e){
       console.error('getUserSpaces error:', e);
       return [];
