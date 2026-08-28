@@ -1051,45 +1051,182 @@ const Cloud = {
       throw new Error('Error al reenviar email de confirmación: ' + e.message);
     }
   },
+  /**
+   * Crea el espacio familiar usando una función RPC SECURITY DEFINER.
+   * Esto bypass-ea RLS completamente y realiza 3 operaciones en una
+   * sola transacción atómica:
+   *   1. Crear family_spaces
+   *   2. Crear family_members (owner)
+   *   3. Crear invitation con el código
+   * Evita el error "new row violates row-level security policy" que
+   * ocurría con inserts directos cuando las políticas son inconsistentes.
+   */
   async createSpace(name, userId){
     if(!this.sb) throw new Error('Cloud not enabled');
-    const inviteCode = Math.random().toString(36).slice(2,8).toUpperCase();
-    const data = Family.emptyData();
-    const {data:space, error} = await this.sb
+    
+    // 1. Llamar a la RPC que crea TODO atómicamente (bypass-ea RLS)
+    const {data: spaceId, error} = await this.sb
+      .rpc('create_family_space', {p_name: name || 'Economía familiar'});
+    
+    if(error) {
+      console.error('create_family_space RPC error:', error);
+      const msg = (error.message || '').toLowerCase();
+      if(msg.includes('perfil de usuario no encontrado') || msg.includes('profile')) {
+        throw new Error('Tu perfil no se creó correctamente. Cierra sesión, vuelve a entrar e inténtalo de nuevo.');
+      }
+      if(msg.includes('no autenticado') || msg.includes('not authenticated')) {
+        throw new Error('Tu sesión ha expirado. Cierra sesión y vuelve a iniciar.');
+      }
+      throw new Error('Error al crear la economía: ' + (error.message || 'desconocido'));
+    }
+    if(!spaceId) throw new Error('No se recibió ID del espacio creado');
+    
+    // 2. Cargar el espacio recién creado
+    const {data: space, error: spaceError} = await this.sb
       .from('family_spaces')
-      .insert({name, invite_code:inviteCode, created_by:userId, data})
-      .select()
+      .select('id, name, invite_code, created_at, created_by, data, data_version')
+      .eq('id', spaceId)
       .single();
-    if(error) throw new Error(error.message);
-    // Añadir creador como miembro
-    const {error:memberError} = await this.sb
-      .from('family_members')
-      .insert({space_id:space.id, user_id:userId, role:'owner'});
-    if(memberError) console.warn('Member insert error:', memberError);
-    // Crear invitación
-    const {error:invError} = await this.sb
-      .from('invitations')
-      .insert({space_id:space.id, code:inviteCode, created_by:userId});
-    if(invError) console.warn('Invitation insert error:', invError);
-    return {id:space.id, name:space.name, inviteCode:space.invite_code, members:[{userId,joinedAt:space.created_at}]};
+    
+    if(spaceError || !space) {
+      throw new Error('Espacio creado pero no se pudo cargar: ' + (spaceError?.message || ''));
+    }
+    
+    // 3. Cargar miembros usando la RPC helper (bypass-ea RLS de family_members)
+    let members = [{userId, joinedAt: space.created_at, role: 'owner', name: '', email: ''}];
+    try {
+      const {data: memberRows, error: mErr} = await this.sb
+        .rpc('get_space_members', {p_space_id: space.id});
+      if(!mErr && memberRows && memberRows.length > 0) {
+        members = memberRows.map(m => ({
+          userId: m.user_id,
+          name: m.name,
+          email: m.email,
+          joinedAt: m.joined_at,
+          role: m.role
+        }));
+      }
+    } catch(me) {
+      console.warn('⚠️  Could not load members for new space:', me.message);
+    }
+    
+    // 4. Guardar data en memoria para el primer push
+    //    (data viene como {} vacío, se rellenará con datos reales durante el onboarding)
+    const initialData = Family.emptyData();
+    App.state.data = initialData;
+    
+    // 5. Guardar data localmente también (para fallback y modo offline)
+    DB.saveData(space.id, initialData);
+    
+    // 6. Guardar el espacio en el storage local para el fallback
+    const localSpaces = DB.spaces();
+    const localSpace = {
+      id: space.id,
+      name: space.name,
+      inviteCode: space.invite_code,
+      createdAt: space.created_at,
+      members: members.map(m => ({userId: m.userId, joinedAt: m.joinedAt, role: m.role}))
+    };
+    const existingIdx = localSpaces.findIndex(s => s.id === space.id);
+    if(existingIdx >= 0) localSpaces[existingIdx] = localSpace;
+    else localSpaces.push(localSpace);
+    DB.saveSpaces(localSpaces);
+    
+    // 7. Programar el primer push para guardar la estructura base en la nube
+    //    (se hará en 800ms gracias al debounce)
+    setTimeout(() => this.schedulePush(), 100);
+    
+    return {
+      id: space.id,
+      name: space.name,
+      inviteCode: space.invite_code,
+      createdAt: space.created_at,
+      members
+    };
   },
   async joinByCode(code, userId){
     if(!this.sb) throw new Error('Cloud not enabled');
+    
+    // 1. Aceptar invitación usando RPC SECURITY DEFINER (ya lo era)
     const {data:spaceId, error} = await this.sb
       .rpc('accept_invitation', {invitation_code:code});
-    if(error) throw new Error(error.message || 'Código de invitación no válido');
-    // Cargar espacio
+    
+    if(error) {
+      const msg = (error.message || '').toLowerCase();
+      if(msg.includes('no válido') || msg.includes('ya usado') || msg.includes('invalid') || msg.includes('already')) {
+        throw new Error('Código de invitación no válido o ya usado');
+      }
+      if(msg.includes('ya eres miembro')) {
+        throw new Error('Ya eres miembro de este espacio');
+      }
+      throw new Error('Error al unirse: ' + error.message);
+    }
+    if(!spaceId) throw new Error('No se recibió ID del espacio');
+    
+    // 2. Cargar el espacio (sin joins — los miembros se cargan por RPC)
     const {data:space, error:spaceError} = await this.sb
       .from('family_spaces')
-      .select('*,family_members(*)')
+      .select('id, name, invite_code, created_at, created_by, data, data_version')
       .eq('id', spaceId)
       .single();
-    if(spaceError) throw new Error(spaceError.message);
+    
+    if(spaceError || !space) {
+      throw new Error('Te has unido pero no se pudo cargar el espacio: ' + (spaceError?.message || ''));
+    }
+    
+    // 3. Cargar miembros usando la RPC helper (bypass-ea RLS)
+    let members = [{userId, joinedAt: space.created_at, role: 'member', name: '', email: ''}];
+    try {
+      const {data: memberRows, error: mErr} = await this.sb
+        .rpc('get_space_members', {p_space_id: space.id});
+      if(!mErr && memberRows && memberRows.length > 0) {
+        members = memberRows.map(m => ({
+          userId: m.user_id,
+          name: m.name,
+          email: m.email,
+          joinedAt: m.joined_at,
+          role: m.role
+        }));
+      }
+    } catch(me) {
+      console.warn('⚠️  Could not load members for joined space:', me.message);
+    }
+    
+    // 4. Cargar data financiera desde la nube
+    const initialData = space.data && Object.keys(space.data).length > 0
+      ? space.data
+      : Family.emptyData();
+    App.state.data = initialData;
+    DB.saveData(space.id, initialData);
+    
+    // 5. Guardar el espacio localmente como fallback
+    const localSpaces = DB.spaces();
+    const localSpace = {
+      id: space.id,
+      name: space.name,
+      inviteCode: space.invite_code,
+      createdAt: space.created_at,
+      members: members.map(m => ({userId: m.userId, joinedAt: m.joinedAt, role: m.role}))
+    };
+    const existingIdx = localSpaces.findIndex(s => s.id === space.id);
+    if(existingIdx >= 0) localSpaces[existingIdx] = localSpace;
+    else localSpaces.push(localSpace);
+    DB.saveSpaces(localSpaces);
+    
+    // 6. Suscribir a cambios realtime
+    this.subscribeToChanges(space.id, (newData) => {
+      App.state.data = newData;
+      DB.saveData(space.id, newData);
+      App.render();
+      Notif.show('Datos actualizados por otro miembro', 'info', 3000);
+    });
+    
     return {
-      id:space.id,
-      name:space.name,
-      inviteCode:space.invite_code,
-      members:space.family_members.map(m=>({userId:m.user_id, joinedAt:m.joined_at}))
+      id: space.id,
+      name: space.name,
+      inviteCode: space.invite_code,
+      createdAt: space.created_at,
+      members
     };
   },
   /**

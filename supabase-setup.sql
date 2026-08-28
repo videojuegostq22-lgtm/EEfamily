@@ -217,6 +217,65 @@ create policy "inv_update" on public.invitations
 -- FUNCIONES RPC
 -- ============================================================================
 
+-- ============================================================================
+-- FUNCIÓN RPC PARA CREAR ESPACIO FAMILIAR (CRÍTICA)
+-- ============================================================================
+-- Esta función SECURITY DEFINER crea el espacio, el miembro y la invitación
+-- en una sola transacción atómica, BYPASS-EANDO RLS completamente.
+-- Esto elimina los problemas de políticas inconsistentes que causan el error:
+--   "new row violates row-level security policy for table family_spaces"
+-- ============================================================================
+drop function if exists public.create_family_space(text);
+create or replace function public.create_family_space(p_name text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_space_id uuid;
+  new_code text;
+  uid_now uuid := auth.uid();
+  attempt integer := 0;
+begin
+  -- Validación: usuario debe estar autenticado
+  if uid_now is null then
+    raise exception 'Usuario no autenticado';
+  end if;
+
+  -- Validación: el perfil debe existir
+  if not exists (select 1 from public.profiles where id = uid_now) then
+    raise exception 'Perfil de usuario no encontrado';
+  end if;
+
+  -- Generar código único de 6 caracteres (reintentar si colisiona)
+  loop
+    new_code := upper(substr(md5(random()::text || clock_timestamp()::text || attempt::text), 1, 6));
+    exit when not exists (select 1 from public.invitations where code = new_code)
+              and not exists (select 1 from public.family_spaces where invite_code = new_code);
+    attempt := attempt + 1;
+    if attempt > 10 then
+      raise exception 'No se pudo generar un código único';
+    end if;
+  end loop;
+
+  -- Crear el espacio (SECURITY DEFINER bypass-ea RLS)
+  insert into public.family_spaces (name, invite_code, created_by, data, data_version)
+  values (coalesce(p_name, 'Economía familiar'), new_code, uid_now, '{}'::jsonb, 1)
+  returning id into new_space_id;
+
+  -- Añadir el creador como miembro con rol 'owner'
+  insert into public.family_members (space_id, user_id, role)
+  values (new_space_id, uid_now, 'owner');
+
+  -- Crear la invitación pendiente (para que el código sea compartible)
+  insert into public.invitations (space_id, code, created_by)
+  values (new_space_id, new_code, uid_now);
+
+  return new_space_id;
+end;
+$$;
+
 -- Función para aceptar invitación (transaccional y segura)
 create or replace function public.accept_invitation(invitation_code text)
 returns uuid
@@ -365,6 +424,7 @@ grant select, insert, update, delete on public.family_spaces to authenticated;
 grant select, insert, delete on public.family_members to authenticated;
 grant select, insert, update on public.invitations to authenticated;
 grant execute on function public.is_member_of_space(uuid) to authenticated;
+grant execute on function public.create_family_space(text) to authenticated;
 grant execute on function public.accept_invitation(text) to authenticated;
 grant execute on function public.get_user_spaces() to authenticated;
 grant execute on function public.get_space_members(uuid) to authenticated;
