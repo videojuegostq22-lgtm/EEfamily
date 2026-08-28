@@ -352,6 +352,71 @@ as $$
 $$;
 
 -- ============================================================================
+-- FUNCIÓN RPC PARA ACTUALIZAR DATOS DEL ESPACIO (CRÍTICA PARA SINCRONIZACIÓN)
+-- ============================================================================
+-- SECURITY DEFINER: bypass-ea RLS y realiza el update atómico con control
+-- de versiones correcto. Elimina los errores:
+--   "new row violates row-level security policy for table family_spaces"
+--   "Conflicto: otro usuario modificó los datos" (cuando las versiones no coinciden)
+-- ============================================================================
+drop function if exists public.update_space_data(uuid, jsonb, integer);
+create or replace function public.update_space_data(
+  p_space_id uuid,
+  p_data jsonb,
+  p_expected_version integer
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current_version integer;
+  v_new_version integer;
+begin
+  -- Validar autenticación
+  if auth.uid() is null then
+    raise exception 'Usuario no autenticado';
+  end if;
+
+  -- Validar que el usuario es miembro del espacio
+  if not exists (
+    select 1 from public.family_members
+    where space_id = p_space_id and user_id = auth.uid()
+  ) then
+    raise exception 'No eres miembro de este espacio';
+  end if;
+
+  -- Leer la versión actual
+  select data_version into v_current_version
+  from public.family_spaces
+  where id = p_space_id;
+
+  if v_current_version is null then
+    raise exception 'Espacio no encontrado';
+  end if;
+
+  -- Si la versión esperada NO coincide con la actual, significa que otro
+  -- dispositivo modificó los datos. El cliente debería recargar y reintentar.
+  if p_expected_version is not null and p_expected_version <> v_current_version then
+    raise exception 'CONFLICTO_VERSION: versión esperada %, actual %', p_expected_version, v_current_version;
+  end if;
+
+  -- Incrementar versión y actualizar datos
+  v_new_version := v_current_version + 1;
+  update public.family_spaces
+  set data = p_data,
+      data_version = v_new_version,
+      updated_at = now()
+  where id = p_space_id;
+
+  return v_new_version;
+end;
+$$;
+
+grant execute on function public.update_space_data(uuid, jsonb, integer) to authenticated;
+
+-- ============================================================================
 -- TRIGGERS
 -- ============================================================================
 

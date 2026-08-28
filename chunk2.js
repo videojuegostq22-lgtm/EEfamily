@@ -1292,6 +1292,12 @@ const Cloud = {
       return [];
     }
   },
+  /**
+   * Carga datos financieros del espacio desde la nube.
+   * Devuelve un objeto {data, data_version} para poder cargar
+   * también la versión actual del servidor y usarla como referencia
+   * en los próximos pushes (optimistic locking).
+   */
   async loadFamilyData(spaceId){
     if(!this.sb) return null;
     try{
@@ -1300,71 +1306,132 @@ const Cloud = {
         .select('data, data_version')
         .eq('id', spaceId)
         .single();
-      if(error || !data) return null;
-      this.lastPushVersion = data.data_version;
-      return data.data;
+      if(error || !data) {
+        if(error) console.error('loadFamilyData error:', error.message);
+        return null;
+      }
+      // IMPORTANTE: guardar la versión actual del servidor como referencia
+      // para los próximos pushes (optimistic locking)
+      this.lastPushVersion = data.data_version | 0;
+      console.log('📥 Cloud: datos cargados, versión servidor =', this.lastPushVersion);
+      return {data: data.data, version: this.lastPushVersion};
     }catch(e){
       console.error('loadFamilyData error:', e);
       return null;
     }
   },
-  async saveFamilyData(spaceId, data, currentVersion){
-    if(!this.sb) return;
-    const {data:result, error} = await this.sb
-      .from('family_spaces')
-      .update({data, data_version:currentVersion+1})
-      .eq('id', spaceId)
-      .eq('data_version', currentVersion)
-      .select('data_version')
-      .single();
-    if(error){
-      console.error('Save error:', error);
-      throw new Error('Error al guardar datos');
+  /**
+   * Guarda datos financieros usando la RPC SECURITY DEFINER
+   * `update_space_data`. Esto bypass-ea RLS y evita los errores:
+   *   - "new row violates row-level security policy"
+   *   - conflictos de versión causados por UPDATE directo
+   *
+   * @param spaceId UUID del espacio
+   * @param data Objeto con todos los datos financieros
+   * @param expectedVersion Versión esperada del servidor (para optimistic locking)
+   *                        Si es null, no se valida versión (primer push).
+   * @returns Nueva versión del servidor tras el update
+   */
+  async saveFamilyData(spaceId, data, expectedVersion){
+    if(!this.sb) return null;
+    console.log('📤 Cloud: guardando datos... versión esperada =', expectedVersion);
+    try {
+      const {data: newVersion, error} = await this.sb
+        .rpc('update_space_data', {
+          p_space_id: spaceId,
+          p_data: data,
+          p_expected_version: expectedVersion
+        });
+      if(error){
+        console.error('❌ Cloud save error:', error);
+        const msg = (error.message || '').toLowerCase();
+        if(msg.includes('conflicto_version') || msg.includes('conflict')){
+          throw new Error('CONFLICTO_VERSION');
+        }
+        if(msg.includes('no eres miembro') || msg.includes('not a member')){
+          throw new Error('No eres miembro de este espacio');
+        }
+        if(msg.includes('no autenticado') || msg.includes('not authenticated')){
+          throw new Error('Tu sesión ha expirado. Inicia sesión de nuevo.');
+        }
+        throw new Error('Error al guardar datos: ' + (error.message || 'desconocido'));
+      }
+      if(newVersion == null){
+        throw new Error('No se recibió nueva versión del servidor');
+      }
+      this.lastPushVersion = newVersion | 0;
+      console.log('✅ Cloud: datos guardados, nueva versión =', this.lastPushVersion);
+      return this.lastPushVersion;
+    } catch(e) {
+      // Re-throw our custom errors
+      if(e.message === 'CONFLICTO_VERSION') throw e;
+      throw e;
     }
-    if(!result){
-      throw new Error('Conflicto: otro usuario modificó los datos');
-    }
-    this.lastPushVersion = result.data_version;
   },
+  /**
+   * Programa un push de datos a la nube con debounce de 800ms.
+   * Usa `lastPushVersion` (versión del servidor conocida) como referencia
+   * para el optimistic locking, NO la versión local del cliente.
+   */
   schedulePush(){
     if(!this.enabled() || !App.state.space || !App.state.data) return;
     if(this._pushTimer) clearTimeout(this._pushTimer);
     this._pushTimer = setTimeout(async ()=>{
       try{
-        const currentVersion = App.state.data.version || 1;
-        await this.saveFamilyData(App.state.space.id, App.state.data, currentVersion);
+        // Usar la última versión conocida del servidor (no la local).
+        // Si lastPushVersion es null, el servidor aceptará cualquier versión
+        // (caso del primer push después de crear el espacio).
+        const expectedVersion = this.lastPushVersion;
+        await this.saveFamilyData(App.state.space.id, App.state.data, expectedVersion);
       }catch(err){
         console.error('Push failed:', err);
-        if(err.message.includes('Conflicto')){
-          Notif.show('Conflicto detectado, recargando datos...','warn');
+        if(err.message === 'CONFLICTO_VERSION' || err.message.includes('Conflicto')){
+          Notif.show('Otro miembro modificó los datos. Recargando...','warn');
           await this.refreshFromCloud();
         } else {
-          Notif.show('Error al sincronizar con la nube','neg');
+          Notif.show('Error al sincronizar con la nube: ' + (err.message||''),'neg', 5000);
         }
       }
     }, 800);
   },
   async refreshFromCloud(){
     if(!this.enabled() || !App.state.space) return;
-    const data = await this.loadFamilyData(App.state.space.id);
-    if(data){
-      App.state.data = data;
+    const result = await this.loadFamilyData(App.state.space.id);
+    if(result && result.data){
+      App.state.data = result.data;
+      DB.saveData(App.state.space.id, result.data);
       App.render();
+      Notif.show('Datos recargados desde la nube', 'info', 1500);
     }
   },
   subscribeToChanges(spaceId, onChange){
     if(!this.enabled() || !this.sb) return;
-    if(this.channel) this.sb.removeChannel(this.channel);
+    if(this.channel) {
+      try { this.sb.removeChannel(this.channel); } catch(e){}
+      this.channel = null;
+    }
+    console.log('🔌 Cloud: suscribiendo a cambios del espacio', spaceId);
     this.channel = this.sb.channel('space-'+spaceId)
       .on('postgres_changes',
         {event:'UPDATE', schema:'public', table:'family_spaces', filter:'id=eq.'+spaceId},
         payload => {
-          if(payload.new && payload.new.data_version !== this.lastPushVersion){
+          if(!payload.new) return;
+          const incomingVersion = payload.new.data_version | 0;
+          // Si la versión entrante es DISTINTA de la que nosotros acabamos de pushear,
+          // significa que OTRO dispositivo hizo el cambio.
+          if(incomingVersion !== this.lastPushVersion){
+            console.log('🔔 Cloud: cambio externo detectado, versión =', incomingVersion, '(nuestra última:', this.lastPushVersion, ')');
+            // Actualizar nuestra referencia de versión del servidor
+            this.lastPushVersion = incomingVersion;
             onChange(payload.new.data);
+          } else {
+            console.log('↩️  Cloud: eco de nuestro propio push ignorado (versión', incomingVersion, ')');
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('🔌 Realtime subscription status:', status);
+      });
   },
   unsubscribe(){
     if(this.channel && this.sb){
@@ -1383,6 +1450,7 @@ const Cloud = {
     if(!session || !session.user){
       return {user:null, space:null, data:null};
     }
+    console.log('🚀 Cloud bootstrap: usuario autenticado =', session.user.email);
     // 2) Get user profile
     const profile = await this.getUserProfile();
     if(!profile){
@@ -1405,16 +1473,16 @@ const Cloud = {
       const spaces = await this.getUserSpaces(p2.id);
       if(spaces.length === 0) return {user:p2, space:null, data:null};
       const space = spaces[0];
-      const data = await this.loadFamilyData(space.id);
-      return {user:p2, space, data};
+      const result = await this.loadFamilyData(space.id);
+      return {user:p2, space, data: result ? result.data : null};
     }
     // 3) Get user's spaces
     const spaces = await this.getUserSpaces(profile.id);
     if(spaces.length === 0) return {user:profile, space:null, data:null};
-    // 4) Load first space's data
+    // 4) Load first space's data (también carga lastPushVersion vía loadFamilyData)
     const space = spaces[0];
-    const data = await this.loadFamilyData(space.id);
-    return {user:profile, space, data};
+    const result = await this.loadFamilyData(space.id);
+    return {user:profile, space, data: result ? result.data : null};
   }
 };
 
