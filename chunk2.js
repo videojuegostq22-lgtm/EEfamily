@@ -85,19 +85,18 @@ const DB = {
   saveTemplates(t){ this._set(this.K_TEMPLATES,t); },
   session: {
     get(tabId){
+      // Solo sessionStorage: se borra al cerrar la pestaña/app
+      // (Seguridad: nadie puede entrar sin autenticación al reabrir)
       const fromTab = sessionStorage.getItem('ff_session_'+tabId);
       if(fromTab) try{ return JSON.parse(fromTab); }catch(e){}
-      const fromLocal = localStorage.getItem('ff_session');
-      if(fromLocal) try{ return JSON.parse(fromLocal); }catch(e){}
       return null;
     },
-    set(tabId,sess,remember){
+    set(tabId,sess /*,remember*/){
+      // Siempre en sessionStorage (efímero). Se ignora el parámetro remember.
       sessionStorage.setItem('ff_session_'+tabId,JSON.stringify(sess));
-      if(remember) localStorage.setItem('ff_session',JSON.stringify(sess));
     },
     clear(tabId){
       sessionStorage.removeItem('ff_session_'+tabId);
-      localStorage.removeItem('ff_session');
     }
   }
 };
@@ -869,9 +868,9 @@ const Cloud = {
       const key = window.FF_CONFIG.supabaseAnonKey.trim();
       this.sb = window.supabase.createClient(url, key, {
         auth: {
-          persistSession: true,
-          autoRefreshToken: true,
-          detectSessionInUrl: true
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
         }
       });
       console.log('✅ Supabase: conectado a', url);
@@ -1816,4 +1815,31 @@ const Biometrics = {
     localStorage.removeItem(this.K_CREDENTIALS);
   }
 };
+
+/* =========================================================================
+   CLEANUP: elimina sesiones antiguas de localStorage
+   En versiones anteriores la sesión podía persistir en localStorage
+   ("Recordar sesión"). Ahora siempre va a sessionStorage, pero quedan
+   residuos en localStorage de instalaciones anteriores que conviene limpiar
+   para garantizar que al reabrir la app siempre se pida login.
+   ========================================================================= */
+function FF_cleanupOldSessions(){
+  try {
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (
+        key === 'ff_session' ||
+        key.startsWith('ff_session_') ||
+        (key.startsWith('sb-') && key.endsWith('-auth-token')) ||
+        (key.startsWith('sb-') && key.endsWith('-auth-token-code-verifier'))
+      )) {
+        toRemove.push(key);
+      }
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    if(toRemove.length) console.log('🧹 Limpieza: eliminadas', toRemove.length, 'sesiones antiguas de localStorage');
+  } catch(e) { console.warn('Cleanup error:', e); }
+}
+window.FF_cleanupOldSessions = FF_cleanupOldSessions;
 

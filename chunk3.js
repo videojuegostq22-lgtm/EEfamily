@@ -221,9 +221,10 @@ function renderAuth(){
             <input id="join-code" class="input" type="text" placeholder="Ej: A1B2C3" style="text-transform:uppercase;letter-spacing:.2em" maxlength="8">
           </div>
         </div>
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-2);margin-bottom:14px">
-          <input type="checkbox" id="remember" checked> Recordar sesión
-        </label>
+        <div style="font-size:12px;color:var(--text-3);text-align:center;margin:10px 4px 16px;padding:10px;background:var(--surface-2);border-radius:10px;line-height:1.5">
+          🔒 Por seguridad, se cerrará la sesión al salir de la app.<br>
+          Puedes entrar con <b>Face ID</b> con un solo toque.
+        </div>
         <button type="submit" class="btn btn-primary btn-block" id="auth-submit">Entrar</button>
         <div id="biometric-login-wrap" style="display:none;margin-top:12px">
           <div style="display:flex;align-items:center;gap:10px;margin:10px 0;font-size:12px;color:var(--text-3)">
@@ -271,7 +272,7 @@ function renderAuth(){
     submitBtn.textContent = 'Procesando...';
     const email = root.querySelector('#auth-email').value.trim();
     const pw = root.querySelector('#auth-pw').value;
-    const remember = root.querySelector('#remember').checked;
+    const remember = false; // sesión efímera por seguridad (siempre sessionStorage)
     try{
       if(tab==='register'){
         const name = root.querySelector('#reg-name').value.trim();

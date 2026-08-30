@@ -540,6 +540,8 @@ window.addEventListener('hashchange',handleHash);
    ========================================================================= */
 (async function init(){
   initTheme();
+  // Limpiar sesiones persistentes antiguas (de cuando existía "Recordar sesión")
+  if(typeof FF_cleanupOldSessions === 'function') FF_cleanupOldSessions();
   Auth.init();
   Cloud.init();
   
