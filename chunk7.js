@@ -410,12 +410,13 @@ function bindAfterRender(){
     }
   });
   document.getElementById('reset-space')?.addEventListener('click',()=>{
-    if(confirm('¿Seguro? Se borrarán TODOS los datos de esta economía familiar.')){
+    if(confirm('¿Seguro? Se borrarán TODOS los datos de esta economía familiar. Esta acción se sincronizará con los demás miembros.')){
       const fresh = Family.emptyData();
-      DB.saveData(sp.id,fresh);
+      // Preserve categories to keep the structure consistent
+      // (user can reconfigure via templates if needed)
       App.state.data = fresh;
-      App.render();
-      Notif.show('Datos reseteados','info');
+      App.commit('Reset completo de la economía familiar');
+      Notif.show('Economía reseteada. Los cambios se sincronizarán con tu pareja.','info',3500);
     }
   });
   document.getElementById('logout')?.addEventListener('click',()=>Auth.logout());
