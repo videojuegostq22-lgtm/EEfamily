@@ -229,13 +229,32 @@ function renderDashboard(){
 
   const aiInsights = AI.analyze(d).slice(0,3);
 
+  const saldoTotal = Engine.totalBalance(d);
+  const patrimonioNeto = Engine.netWorth(d);
+
+  // Mostrar hint si hay saldo en cuentas pero no hay ingresos en el periodo
+  const showHint = saldoTotal > 0 && totals.income === 0 && d.accounts.length > 0;
+
   return `
   <div class="metric-row">
-    <div class="metric pos"><div class="label">Ingresos</div><div class="value num">${fmtMoney(totals.income)}</div><div class="sub">${range.label}</div></div>
-    <div class="metric neg"><div class="label">Gastos</div><div class="value num">${fmtMoney(totals.expense)}</div><div class="sub">${range.label}</div></div>
-    <div class="metric ${totals.savings>=0?'pos':'neg'}"><div class="label">Ahorro</div><div class="value num">${fmtMoney(totals.savings)}</div><div class="sub">Ingresos − Gastos</div></div>
-    <div class="metric brand"><div class="label">Tasa de ahorro</div><div class="value num">${(totals.rate*100).toFixed(1)}%</div><div class="sub">${totals.income>0?'Ahorro / Ingresos':'Sin ingresos'}</div></div>
+    <div class="metric hero ${saldoTotal>=0?'pos':'neg'}"><div class="label">💰 Saldo total</div><div class="value num">${fmtMoney(saldoTotal)}</div><div class="sub">En todas las cuentas</div></div>
+    <div class="metric pos"><div class="label">📈 Ingresos</div><div class="value num">${fmtMoney(totals.income)}</div><div class="sub">${range.label}</div></div>
+    <div class="metric neg"><div class="label">📉 Gastos</div><div class="value num">${fmtMoney(totals.expense)}</div><div class="sub">${range.label}</div></div>
+    <div class="metric ${totals.savings>=0?'pos':'neg'}"><div class="label">💵 Ahorro</div><div class="value num">${fmtMoney(totals.savings)}</div><div class="sub">Ingresos − Gastos</div></div>
+    <div class="metric brand"><div class="label">📊 Tasa</div><div class="value num">${(totals.rate*100).toFixed(1)}%</div><div class="sub">${totals.income>0?'Ahorro / Ingresos':'Sin ingresos'}</div></div>
   </div>
+
+  ${showHint ? `
+  <div class="info-hint">
+    💡 <b>Saldo total</b> = lo que hay ahora mismo en todas vuestras cuentas (incluye saldos iniciales).
+    <b>Ingresos</b> = movimientos de entrada registrados en el periodo.
+    Para registrar un ingreso, usa el botón <b>+</b> → <b>Ingreso</b>.
+  </div>` : ''}
+
+  ${saldoTotal !== patrimonioNeto && (Engine.debtOutstanding(d) > 0) ? `
+  <div class="metric-row full-width">
+    <div class="metric ${patrimonioNeto>=0?'pos':'neg'}"><div class="label">🏛 Patrimonio neto</div><div class="value num">${fmtMoney(patrimonioNeto)}</div><div class="sub">Cuentas (${fmtMoney(saldoTotal)}) − Deudas (${fmtMoney(Engine.debtOutstanding(d))})</div></div>
+  </div>` : ''}
 
   <div class="health-card">
     <div class="health-main">
