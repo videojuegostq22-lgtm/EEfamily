@@ -529,6 +529,10 @@ function renderAjustes(){
   const u = App.state.user;
   const sp = App.state.space;
   const members = (sp?.members||[]).map(m=>({...m,u:Family.getUserById(m.userId)}));
+  // Biometrics status
+  const bioSupported = typeof Biometrics !== 'undefined' && Biometrics.isSupported();
+  const bioActive = bioSupported && Biometrics.hasCredentialForUserId(u.id);
+  const bioCreds = bioSupported ? Biometrics.getCredentials() : [];
   return `
   <div class="grid-2">
     <div class="card">
@@ -541,6 +545,43 @@ function renderAjustes(){
       <div class="field"><label>Contraseña actual</label><input class="input" type="password" id="pw-old"></div>
       <div class="field"><label>Nueva contraseña</label><input class="input" type="password" id="pw-new"></div>
       <button class="btn btn-ghost" id="change-pw">Actualizar</button>
+      <hr style="border:none;border-top:1px solid var(--border);margin:18px 0">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px">🔐</span>
+        <span>Face ID / Touch ID</span>
+      </h3>
+      ${!bioSupported ? `
+        <div class="hint" style="background:var(--surface-2);padding:12px;border-radius:10px;margin-bottom:10px">
+          <b>⚠ No disponible</b>
+          <div class="small" style="margin-top:4px">
+            Tu navegador o dispositivo no soporta autenticación biométrica.
+            Usa Safari en iPhone/iPad o Chrome en Android con Face ID/Touch ID/huella configurados.
+          </div>
+        </div>
+      ` : bioActive ? `
+        <div style="background:var(--pos-soft);color:var(--pos-text);padding:12px;border-radius:10px;margin-bottom:10px;font-size:13px">
+          ✅ <b>Activado</b> en este dispositivo
+          <div class="small" style="margin-top:4px;opacity:.9">
+            Puedes iniciar sesión usando Face ID, Touch ID o tu huella dactilar.
+          </div>
+        </div>
+        <div class="hint" style="background:var(--surface-2);padding:10px;border-radius:8px;margin-bottom:10px">
+          <div class="small">
+            💡 La biometría solo funciona en <b>este dispositivo</b>. En otros dispositivos
+            tendrás que usar email y contraseña (o activar Face ID allí también).
+          </div>
+        </div>
+        <button class="btn btn-danger btn-block" id="biometric-disable">Desactivar Face ID</button>
+      ` : `
+        <div class="hint" style="background:var(--surface-2);padding:12px;border-radius:10px;margin-bottom:10px">
+          <b>Activa el acceso rápido con biometría</b>
+          <div class="small" style="margin-top:4px">
+            Usa Face ID, Touch ID o tu huella dactilar para iniciar sesión sin escribir la contraseña.
+            Te pediremos confirmarte con tu contraseña actual por seguridad.
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" id="biometric-enable">🔐 Activar Face ID</button>
+      `}
     </div>
     <div class="card">
       <h3>Apariencia</h3>

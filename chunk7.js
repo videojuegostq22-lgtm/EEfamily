@@ -386,9 +386,59 @@ function bindAfterRender(){
     const oldPw = document.getElementById('pw-old').value;
     const newPw = document.getElementById('pw-new').value;
     if(newPw.length<6){ Notif.show('Mínimo 6 caracteres','neg'); return; }
-    try{ await Auth.changePassword(oldPw,newPw); Notif.show('Contraseña actualizada','pos'); }
+    try{
+      await Auth.changePassword(oldPw,newPw);
+      // Si había Face ID activado, invalidarlo (la contraseña guardada ya no es válida)
+      if(typeof Biometrics !== 'undefined' && Biometrics.hasCredentialForUserId(App.state.user.id)){
+        Biometrics.remove(App.state.user.id);
+        Notif.show('Contraseña actualizada. Face ID desactivado por seguridad, actívalo de nuevo.','pos',5000);
+        App.render();
+        return;
+      }
+      Notif.show('Contraseña actualizada','pos');
+    }
     catch(e){ Notif.show(e.message,'neg'); }
   });
+
+  /* ====== BIOMETRICS: enable / disable Face ID ====== */
+  const bioEnableBtn = document.getElementById('biometric-enable');
+  if(bioEnableBtn && typeof Biometrics !== 'undefined'){
+    bioEnableBtn.addEventListener('click', async ()=>{
+      const u = App.state.user;
+      // Pedir contraseña actual como confirmación de seguridad
+      const pw = prompt('Introduce tu contraseña actual para confirmar la activación de Face ID:');
+      if(!pw) return;
+      // Verificar contraseña haciendo login
+      bioEnableBtn.disabled = true;
+      bioEnableBtn.textContent = 'Verificando...';
+      try {
+        // Probamos login con la contraseña introducida (sin guardar sesión nueva)
+        const testUser = await Auth.login({email:u.email, password:pw, remember:false});
+        if(!testUser || testUser.email !== u.email){
+          throw new Error('Contraseña incorrecta');
+        }
+        // Activar biometría
+        bioEnableBtn.textContent = 'Activa Face ID / Touch ID en tu dispositivo...';
+        await Biometrics.register(u, pw);
+        Notif.show('✅ Face ID activado. La próxima vez podrás entrar con un toque.','pos',4000);
+        App.render();
+      } catch(e){
+        console.error('[biometric-enable]', e);
+        Notif.show(e.message || 'No se pudo activar Face ID','neg',4000);
+        bioEnableBtn.disabled = false;
+        bioEnableBtn.textContent = '🔐 Activar Face ID';
+      }
+    });
+  }
+  const bioDisableBtn = document.getElementById('biometric-disable');
+  if(bioDisableBtn && typeof Biometrics !== 'undefined'){
+    bioDisableBtn.addEventListener('click', ()=>{
+      if(!confirm('¿Desactivar Face ID? Tendrás que usar email y contraseña para entrar.')) return;
+      Biometrics.remove(App.state.user.id);
+      Notif.show('Face ID desactivado','info');
+      App.render();
+    });
+  }
   document.getElementById('save-space')?.addEventListener('click',()=>{
     const name = document.getElementById('space-name').value.trim();
     if(!name) return;

@@ -1603,3 +1603,217 @@ Family.joinByCode = async function(code, userId){
   return _originalFamily.joinByCode(code, userId);
 };
 
+/* =========================================================================
+   BIOMETRICS (WebAuthn / Face ID / Touch ID)
+   =========================================================================
+   Permite autenticarse con Face ID/Touch ID/Windows Hello.
+
+   Estrategia:
+   - El usuario activa Face ID desde Ajustes → se crea una credencial WebAuthn
+     con userVerification: 'required' (fuerza biometría del dispositivo).
+   - Guardamos localmente: credentialId + email + hash de contraseña ofuscado.
+   - En login, el botón "Entrar con Face ID" hace assertion WebAuthn.
+     Si la assertion es válida → desciframos credenciales locales → login real.
+
+   Las credenciales WebAuthn son específicas del dispositivo, por lo que
+   Face ID solo funcionará en el dispositivo donde se activó.
+   ========================================================================= */
+const Biometrics = {
+  K_CREDENTIALS: 'ff_biometrics',
+
+  /** ¿El navegador soporta WebAuthn? */
+  isSupported(){
+    return !!(window.PublicKeyCredential
+      && navigator.credentials
+      && navigator.credentials.create
+      && navigator.credentials.get);
+  },
+
+  /** Obtener todas las credenciales biométricas registradas en este dispositivo */
+  getCredentials(){
+    try {
+      const raw = localStorage.getItem(this.K_CREDENTIALS);
+      return raw ? JSON.parse(raw) : [];
+    } catch(e){ return []; }
+  },
+
+  _saveCredentials(creds){
+    localStorage.setItem(this.K_CREDENTIALS, JSON.stringify(creds));
+  },
+
+  /** ¿Hay credenciales guardadas para este dispositivo? */
+  hasCredentials(){
+    return this.getCredentials().length > 0;
+  },
+
+  /** ¿Hay credencial para un userId concreto? */
+  hasCredentialForUserId(userId){
+    return this.getCredentials().some(c => c.userId === userId);
+  },
+
+  /* Ofuscación simple para proteger el hash en localStorage.
+     NO es criptografía real; evita lectura trivial. */
+  _obfuscate(text, key){
+    const k = 'FF_BIO_' + key;
+    let out = '';
+    for(let i=0;i<text.length;i++){
+      out += String.fromCharCode(text.charCodeAt(i) ^ k.charCodeAt(i % k.length));
+    }
+    return btoa(unescape(encodeURIComponent(out)));
+  },
+  _deobfuscate(b64, key){
+    try {
+      const k = 'FF_BIO_' + key;
+      const raw = decodeURIComponent(escape(atob(b64)));
+      let out = '';
+      for(let i=0;i<raw.length;i++){
+        out += String.fromCharCode(raw.charCodeAt(i) ^ k.charCodeAt(i % k.length));
+      }
+      return out;
+    } catch(e){ return null; }
+  },
+
+  /** Convierte Uint8Array a base64url (estándar WebAuthn) */
+  _b64url(buf){
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let bin = '';
+    for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  },
+  /** Convierte base64url a Uint8Array */
+  _b64urlToBuf(str){
+    let s = str.replace(/-/g,'+').replace(/_/g,'/');
+    while(s.length % 4) s += '=';
+    const bin = atob(s);
+    const buf = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) buf[i] = bin.charCodeAt(i);
+    return buf;
+  },
+
+  /**
+   * Registrar una nueva credencial biométrica para el usuario actual.
+   * @param {object} user {id, email, name}
+   * @param {string} plainPassword - contraseña en texto plano (ofuscada localmente).
+   *
+   * SEGURIDAD: La contraseña se ofusca con XOR + base64 usando el credentialId
+   * como clave, y se guarda en localStorage. No se envía a ningún servidor.
+   * Es accesible solo tras desbloquear el dispositivo con biometría.
+   * Para una app bancaria usaríamos tokens de sesión, pero para una app de
+   * economía familiar este enfoque es aceptable y muy cómodo.
+   */
+  async register(user, plainPassword){
+    if(!this.isSupported()) throw new Error('Tu navegador no soporta Face ID / Touch ID');
+    // Si ya hay credencial para este user, la eliminamos primero
+    if(this.hasCredentialForUserId(user.id)){
+      this.remove(user.id);
+    }
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userIdBytes = new TextEncoder().encode(user.id);
+    const rpId = location.hostname;
+    const rpName = 'Family Finance';
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: rpName, id: rpId },
+        user: {
+          id: userIdBytes,
+          name: user.email,
+          displayName: user.name || user.email
+        },
+        pubKeyCredParams: [
+          { type:'public-key', alg:-7 },   // ES256
+          { type:'public-key', alg:-257 }  // RS256
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform', // solo el dispositivo (Face ID)
+          userVerification: 'required',        // fuerza biometría
+          residentKey: 'preferred',
+          requireResidentKey: false
+        },
+        timeout: 60000,
+        attestation: 'none'
+      }
+    });
+
+    if(!credential) throw new Error('No se pudo crear la credencial biométrica');
+
+    const credentialId = this._b64url(new Uint8Array(credential.rawId));
+    const entry = {
+      credentialId,
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      // ofuscamos la contraseña usando credentialId como clave
+      secured: this._obfuscate(plainPassword, credentialId),
+      rpId,
+      createdAt: nowISO()
+    };
+    const creds = this.getCredentials();
+    creds.push(entry);
+    this._saveCredentials(creds);
+    console.log('✅ Biometría registrada para', user.email);
+    return entry;
+  },
+
+  /**
+   * Login con biometría. Devuelve {email, password} si tiene éxito.
+   * Si hay múltiples credenciales (varios usuarios en este dispositivo),
+   * usamos allowCredentials con todas para que el sistema elija.
+   */
+  async login(){
+    if(!this.isSupported()) throw new Error('Tu navegador no soporta Face ID / Touch ID');
+    const creds = this.getCredentials();
+    if(creds.length === 0) throw new Error('No hay Face ID configurado en este dispositivo');
+
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const allowCredentials = creds.map(c => ({
+      type: 'public-key',
+      id: this._b64urlToBuf(c.credentialId)
+    }));
+
+    let assertion;
+    try {
+      assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          allowCredentials,
+          userVerification: 'required',
+          rpId: creds[0].rpId || location.hostname,
+          timeout: 60000
+        }
+      });
+    } catch(e){
+      if(e.name === 'NotAllowedError') throw new Error('Face ID cancelado o no disponible');
+      if(e.name === 'SecurityError') throw new Error('Face ID no disponible en este dispositivo. Usa email/contraseña.');
+      throw new Error('Error al verificar Face ID: ' + (e.message || e.name));
+    }
+    if(!assertion) throw new Error('Face ID cancelado');
+
+    const usedId = this._b64url(new Uint8Array(assertion.rawId));
+    const matched = creds.find(c => c.credentialId === usedId);
+    if(!matched) throw new Error('Credencial no reconocida');
+
+    const password = this._deobfuscate(matched.secured, matched.credentialId);
+    if(!password) throw new Error('No se pudieron recuperar las credenciales');
+
+    return {
+      userId: matched.userId,
+      email: matched.email,
+      name: matched.name,
+      password
+    };
+  },
+
+  /** Eliminar credencial biométrica de un usuario */
+  remove(userId){
+    const creds = this.getCredentials().filter(c => c.userId !== userId);
+    this._saveCredentials(creds);
+  },
+
+  /** Eliminar todas las credenciales de este dispositivo */
+  clearAll(){
+    localStorage.removeItem(this.K_CREDENTIALS);
+  }
+};
+

@@ -225,6 +225,17 @@ function renderAuth(){
           <input type="checkbox" id="remember" checked> Recordar sesión
         </label>
         <button type="submit" class="btn btn-primary btn-block" id="auth-submit">Entrar</button>
+        <div id="biometric-login-wrap" style="display:none;margin-top:12px">
+          <div style="display:flex;align-items:center;gap:10px;margin:10px 0;font-size:12px;color:var(--text-3)">
+            <div style="flex:1;height:1px;background:var(--border)"></div>
+            <span>o</span>
+            <div style="flex:1;height:1px;background:var(--border)"></div>
+          </div>
+          <button type="button" class="btn btn-biometric btn-block" id="biometric-login-btn">
+            <span class="bio-icon">🔐</span>
+            <span>Entrar con Face ID</span>
+          </button>
+        </div>
         <div id="auth-error" style="margin-top:10px;color:var(--neg);font-size:13px;text-align:center"></div>
         <div class="hint">
           <button type="button" id="forgot" style="color:var(--brand);font-size:12.5px">¿Olvidaste la contraseña?</button>
@@ -423,6 +434,45 @@ function renderAuth(){
   root.querySelector('#forgot').addEventListener('click',()=>{
     Notif.show('Recuperación de contraseña no disponible en esta demo. Usa "Explorar datos de demostración".','info',5000);
   });
+
+  /* ====== BIOMETRIC LOGIN BUTTON ====== */
+  if(typeof Biometrics !== 'undefined' && Biometrics.isSupported() && Biometrics.hasCredentials()){
+    const bioWrap = root.querySelector('#biometric-login-wrap');
+    const bioBtn = root.querySelector('#biometric-login-btn');
+    if(bioWrap && bioBtn){
+      bioWrap.style.display = 'block';
+      bioBtn.addEventListener('click', async ()=>{
+        const errEl = root.querySelector('#auth-error');
+        errEl.innerHTML = '';
+        bioBtn.disabled = true;
+        bioBtn.innerHTML = '<span class="bio-icon">🔐</span><span>Verificando...</span>';
+        try {
+          const creds = await Biometrics.login();
+          // Real login with recovered credentials
+          const u = await Auth.login({email:creds.email, password:creds.password, remember:true});
+          App.state.user = u;
+          if(typeof Cloud !== 'undefined' && Cloud.enabled && Cloud.enabled()){
+            try { await App.loadFromCloud(); } catch(e){ console.warn('Cloud reload failed:', e); }
+          }
+          App.state.space = Auth.currentSpace();
+          if(App.state.space){
+            App.state.data = DB.data(App.state.space.id);
+            if(App.state.data && Family.migrateCategories(App.state.data)){
+              DB.saveData(App.state.space.id, App.state.data);
+            }
+            App.nav('dashboard');
+          } else {
+            App.nav('onboarding');
+          }
+        } catch(e){
+          console.error('[biometric-login]', e);
+          errEl.textContent = e.message || 'Error al verificar Face ID';
+          bioBtn.disabled = false;
+          bioBtn.innerHTML = '<span class="bio-icon">🔐</span><span>Entrar con Face ID</span>';
+        }
+      });
+    }
+  }
 }
 
 /* =========================================================================
