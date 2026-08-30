@@ -573,6 +573,21 @@ window.addEventListener('hashchange',handleHash);
     }
   });
   handleHash();
-  App.render();
+
+  // ============================================================================
+  // AUTO-UNLOCK con Face ID / Touch ID
+  // Si no hay sesión activa PERO hay credenciales biométricas registradas en
+  // este dispositivo, mostrar la pantalla de desbloqueo automática en lugar
+  // del login normal. Face ID saltará solo sin tener que pulsar ningún botón.
+  // ============================================================================
+  if(!App.state.user
+     && typeof Biometrics !== 'undefined'
+     && Biometrics.isSupported()
+     && Biometrics.hasCredentials()){
+    console.log('🔐 Bio-unlock: credenciales biométricas detectadas, mostrando auto-unlock');
+    renderBioUnlock();
+  } else {
+    App.render();
+  }
 })();
 

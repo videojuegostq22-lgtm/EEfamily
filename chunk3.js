@@ -476,6 +476,119 @@ function renderAuth(){
 }
 
 /* =========================================================================
+   BIO-UNLOCK SCREEN (auto Face ID al abrir la app)
+   Pantalla completa que se muestra al abrir la app si hay credenciales
+   biométricas guardadas. Intenta automáticamente Face ID; si el navegador
+   requiere gesto del usuario, muestra un botón grande para tocar.
+   ========================================================================= */
+async function renderBioUnlock(){
+  const root = document.getElementById('app');
+  const creds = typeof Biometrics !== 'undefined' ? Biometrics.getCredentials() : [];
+  const lastEmail = creds.length > 0 ? creds[creds.length-1].email : '';
+  const lastName = creds.length > 0 ? creds[creds.length-1].name : '';
+
+  root.innerHTML = `
+  <div class="bio-unlock">
+    <div class="bio-logo">FF</div>
+    <h1 class="bio-title">Family Finance</h1>
+    <p class="bio-sub">Nuestra economía familiar</p>
+    <button class="bio-button" id="bio-btn" aria-label="Entrar con Face ID">
+      <span class="bio-icon">🔐</span>
+    </button>
+    <div class="bio-status" id="bio-status">Preparando Face ID...</div>
+    <div class="bio-error hidden" id="bio-error"></div>
+    <div class="bio-fallback">
+      <div class="bio-cta" id="bio-cta">Toca el botón para desbloquear</div>
+      ${lastEmail ? `<div class="bio-user">👤 ${h.esc(lastName || '')} · ${h.esc(lastEmail)}</div>` : ''}
+      <button class="bio-fallback-link" id="bio-password-link">Entrar con contraseña</button>
+      <button class="bio-fallback-link" id="bio-demo-link" style="opacity:.7;font-size:13px">✨ Explorar datos de demostración</button>
+    </div>
+  </div>`;
+
+  const bioBtn = root.querySelector('#bio-btn');
+  const statusEl = root.querySelector('#bio-status');
+  const errorEl = root.querySelector('#bio-error');
+  const ctaEl = root.querySelector('#bio-cta');
+  const pwdLink = root.querySelector('#bio-password-link');
+  const demoLink = root.querySelector('#bio-demo-link');
+
+  let autoTried = false;
+
+  async function tryUnlock(triggeredByUser){
+    errorEl.classList.add('hidden');
+    bioBtn.classList.add('loading');
+    bioBtn.disabled = true;
+    statusEl.textContent = 'Verificando identidad...';
+    ctaEl.textContent = '';
+    try {
+      const credsRecovered = await Biometrics.login();
+      statusEl.textContent = 'Autenticado ✓ Cargando...';
+      // Hacer login real con las credenciales recuperadas
+      const u = await Auth.login({email:credsRecovered.email, password:credsRecovered.password, remember:true});
+      App.state.user = u;
+      if(typeof Cloud !== 'undefined' && Cloud.enabled && Cloud.enabled()){
+        try { await App.loadFromCloud(); } catch(e){ console.warn('Cloud reload failed:', e); }
+      }
+      App.state.space = Auth.currentSpace();
+      if(App.state.space){
+        App.state.data = DB.data(App.state.space.id);
+        if(App.state.data && Family.migrateCategories(App.state.data)){
+          DB.saveData(App.state.space.id, App.state.data);
+        }
+        App.nav('dashboard');
+      } else {
+        App.nav('onboarding');
+      }
+    } catch(e){
+      console.error('[bio-unlock]', e);
+      bioBtn.classList.remove('loading');
+      bioBtn.disabled = false;
+      const msg = (e.message || '').toLowerCase();
+      // NotAllowedError típicamente significa que faltó user gesture
+      if(e.name === 'NotAllowedError' || msg.includes('not allowed') || msg.includes('cancelado')){
+        if(!triggeredByUser){
+          // Primer intento automático falló: el navegador requiere gesto
+          statusEl.textContent = '';
+          ctaEl.textContent = 'Toca el botón para entrar con Face ID';
+          return;
+        }
+        errorEl.textContent = 'Face ID cancelado. Toca de nuevo para intentarlo.';
+      } else if(msg.includes('seguridad') || msg.includes('security') || msg.includes('no disponible')){
+        errorEl.textContent = 'Face ID no disponible. Usa contraseña.';
+      } else if(msg.includes('no hay') || msg.includes('no configurado')){
+        errorEl.textContent = 'Face ID desactivado. Usa contraseña.';
+      } else {
+        errorEl.textContent = e.message || 'Error al verificar Face ID';
+      }
+      errorEl.classList.remove('hidden');
+      statusEl.textContent = '';
+      ctaEl.textContent = 'Toca el botón para reintentar';
+    }
+  }
+
+  // Click handler del botón grande
+  bioBtn.addEventListener('click', () => tryUnlock(true));
+
+  // Fallback: ir a la pantalla de login normal
+  pwdLink.addEventListener('click', () => {
+    renderAuth();
+  });
+
+  // Fallback: datos demo
+  demoLink.addEventListener('click', () => {
+    loadDemoAndEnter();
+  });
+
+  // Intento automático al cargar (con delay breve para que el DOM esté listo)
+  setTimeout(() => {
+    if(!autoTried){
+      autoTried = true;
+      tryUnlock(false);
+    }
+  }, 400);
+}
+
+/* =========================================================================
    ONBOARDING WIZARD
    ========================================================================= */
 function renderOnboarding(){
