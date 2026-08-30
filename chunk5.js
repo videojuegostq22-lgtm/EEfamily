@@ -376,14 +376,14 @@ function renderCalendario(){
   const selectedEvents = selected?eventsByDay[selected]||[]:[];
 
   return `
-  <div class="card">
+  <div class="card cal-card">
     <div class="cal-head">
       <button class="icon-btn" id="cal-prev">←</button>
       <h3>${first.toLocaleDateString('es-ES',{month:'long',year:'numeric'})}</h3>
       <button class="icon-btn" id="cal-next">→</button>
     </div>
     <div class="cal-grid">
-      <div class="dn">Lun</div><div class="dn">Mar</div><div class="dn">Mié</div><div class="dn">Jue</div><div class="dn">Vie</div><div class="dn">Sáb</div><div class="dn">Dom</div>
+      <div class="dn"><span class="dn-full">Lun</span><span class="dn-short">L</span></div><div class="dn"><span class="dn-full">Mar</span><span class="dn-short">M</span></div><div class="dn"><span class="dn-full">Mié</span><span class="dn-short">X</span></div><div class="dn"><span class="dn-full">Jue</span><span class="dn-short">J</span></div><div class="dn"><span class="dn-full">Vie</span><span class="dn-short">V</span></div><div class="dn"><span class="dn-full">Sáb</span><span class="dn-short">S</span></div><div class="dn"><span class="dn-full">Dom</span><span class="dn-short">D</span></div>
       ${cells.join('')}
     </div>
     ${selected?`
