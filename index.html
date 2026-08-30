@@ -275,6 +275,12 @@ html.dark .modal-backdrop{background:rgba(0,0,0,.7)}
 .notif.info{border-left:3px solid var(--brand)}
 .ai-card{background:linear-gradient(135deg,#EEF2FF,#E0E7FF);border:1px solid rgba(99,102,241,.2);border-radius:var(--radius-lg);padding:22px;margin-bottom:16px;color:#312E81;position:relative;overflow:hidden}
 html.dark .ai-card{background:linear-gradient(135deg,rgba(129,140,248,.12),rgba(139,92,246,.08));border-color:rgba(129,140,248,.25);color:#E0E7FF}
+.ai-card.ai-card-hero{background:linear-gradient(135deg,#EEF2FF 0%,#E0E7FF 60%,#C7D2FE 100%);border-color:rgba(99,102,241,.3);padding:26px}
+html.dark .ai-card.ai-card-hero{background:linear-gradient(135deg,rgba(99,102,241,.18) 0%,rgba(129,140,248,.14) 60%,rgba(139,92,246,.10) 100%);border-color:rgba(129,140,248,.35);color:#E0E7FF}
+.ai-card.ai-card-hero::before{content:"";position:absolute;top:-40px;right:-40px;width:140px;height:140px;border-radius:50%;background:radial-gradient(circle,rgba(99,102,241,.2),transparent 70%);pointer-events:none}
+html.dark .ai-card.ai-card-hero::before{background:radial-gradient(circle,rgba(129,140,248,.25),transparent 70%)}
+.ai-card.ai-card-hero h3{font-size:18px;margin-bottom:8px}
+.ai-card.ai-card-hero p{font-size:14.5px;line-height:1.55;margin-top:4px}
 .ai-card h3{margin:0 0 4px;font-size:16px;font-weight:700;color:inherit;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:8px}
 .ai-card .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;background:rgba(99,102,241,.15);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 html.dark .ai-card .tag{background:rgba(129,140,248,.2)}

@@ -419,7 +419,7 @@ function renderIA(){
   const insights = AI.analyze(d);
   const health = Engine.healthScore(d);
   return `
-  <div class="ai-card" style="background:linear-gradient(135deg,#EEF2FF,#E0E7FF)">
+  <div class="ai-card ai-card-hero">
     <h3>🤖 Asesor financiero familiar</h3>
     <p>Analizo vuestros datos reales (ingresos, gastos, presupuestos, deudas, objetivos) y os doy recomendaciones accionables. No invento información: cada sugerencia se basa en los números registrados.</p>
   </div>
